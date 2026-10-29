@@ -52,6 +52,29 @@ Download a backup now and then anyway. Clearing your browser data erases what's 
 > ⚠️ Don't upload your `.xlsx` file or backup `.json` files to a public repo.
 > The included `.gitignore` blocks them if you use git from your computer.
 
+## Cloud sync (optional)
+
+With cloud sync on, you sign in with Google and your data is saved in Firebase,
+so your phone and computer show the same numbers.
+
+1. Put your web app settings in `firebase-config.js`.
+2. In Firebase → **Authentication → Settings → Authorized domains**, add `<your-username>.github.io`.
+3. In Firebase → **Firestore Database → Rules**, paste this and **Publish**:
+
+   ```
+   rules_version = '2';
+   service cloud.firestore {
+     match /databases/{database}/documents {
+       match /trackers/{userId} {
+         allow read, write: if request.auth != null && request.auth.uid == userId;
+       }
+     }
+   }
+   ```
+
+Each person's data is one private document that only their own Google login can read or write.
+Leave `apiKey` empty in `firebase-config.js` to run without cloud sync.
+
 ## Credits
 
 `vendor/jszip.min.js` is [JSZip](https://stuk.github.io/jszip/) 3.10.1 (MIT license), used to read the Excel file.

@@ -63,8 +63,9 @@
     } catch (e) { storageOK = false; }
     try { Object.assign(UI, JSON.parse(localStorage.getItem(KEY + ':ui') || '{}')); } catch (e) { /* ignore */ }
   }
-  function save() {
+  function save(opts) {
     try { localStorage.setItem(KEY, JSON.stringify(S)); storageOK = true; } catch (e) { storageOK = false; }
+    if (!(opts && opts.fromCloud) && window.cloud && window.cloud.push) window.cloud.push(S);
   }
   function saveUI() { try { localStorage.setItem(KEY + ':ui', JSON.stringify(UI)); } catch (e) { /* ignore */ } }
 
@@ -229,6 +230,7 @@
         <h2>Welcome</h2>
         <p>Start by loading your Excel tracker (<b>Budget_Debt_Tracker.xlsx</b>). Your accounts, debts, payments and budget will be copied in.</p>
         <p class="muted small">Your data is saved only in this browser on this device. It is never uploaded, and it is not in the GitHub repo.</p>
+        ${window.cloud && window.cloud.enabled && !window.cloud.user ? `<div class="cloud-hero"><p style="margin:0"><b>Already use this on another device?</b> Sign in to load your data.</p><button class="btn gbtn" data-act="cloudSignIn">${GOOGLE_G} Sign in with Google</button></div>` : ''}
         <div class="btn-row"><button class="btn primary" data-act="importXlsx">Import Excel file</button>
         <button class="btn" data-act="restoreJson">Restore a backup</button>
         <button class="btn" data-act="goSettings">Start from scratch</button></div>
@@ -471,13 +473,39 @@
       </table></section>`;
   }
 
+  const GOOGLE_G = '<svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>';
+  function cloudCard() {
+    const c = window.cloud;
+    if (!c || !c.enabled) return '';
+    if (!c.user) {
+      return `<div class="sec-head"><h2>Cloud sync</h2></div>
+        <div class="card cloud-card">
+          <p style="margin-top:0">Sign in to save your data online and see it on your phone and computer. Only you can see it.</p>
+          <button class="btn gbtn" data-act="cloudSignIn">${GOOGLE_G} Sign in with Google</button>
+        </div>`;
+    }
+    const u = c.user;
+    const initial = esc((u.displayName || u.email || '?').trim().charAt(0).toUpperCase());
+    return `<div class="sec-head"><h2>Cloud sync</h2></div>
+      <div class="card cloud-card">
+        <div class="who">
+          ${u.photoURL ? `<img src="${esc(u.photoURL)}" alt="" width="40" height="40" referrerpolicy="no-referrer">` : `<span class="avatar">${initial}</span>`}
+          <div><b>${esc(u.displayName || 'Signed in')}</b><div class="small muted">${esc(u.email || '')}</div></div>
+        </div>
+        <p class="small" style="margin:12px 0"><span class="sync-dot ${esc(c.status)}"></span>${esc(c.statusText())}</p>
+        <button class="btn" data-act="cloudSignOut">Sign out</button>
+        <p class="muted small" style="margin-bottom:0">Signing out keeps a copy in this browser.</p>
+      </div>`;
+  }
+
   function viewSettings() {
     const cats = S.categories.map((c) => `<tr ${rowAttrs('category', c.uid)}><td>${esc(c.name)}</td><td><span class="pill ${c.type === 'Income' ? 'good' : ''}">${esc(c.type)}</span></td><td class="num">${num(c.budget) ? money(c.budget) : '<span class="muted">—</span>'}</td></tr>`).join('');
     return `
       <section>
+        ${cloudCard()}
         <div class="sec-head"><h2>Your data</h2></div>
         <div class="card">
-          <p class="small" style="margin-top:0">Everything is saved in <b>this browser on this device</b> only. To use it on your phone too, make a backup here and restore it there.</p>
+          <p class="small" style="margin-top:0">${window.cloud && window.cloud.user ? 'Saved in this browser <b>and in your cloud account</b>. Backups are still handy as an extra copy.' : 'Everything is saved in <b>this browser on this device</b> only. To use it on your phone too, ' + (window.cloud && window.cloud.enabled ? 'sign in above, or ' : '') + 'make a backup here and restore it there.'}</p>
           ${storageOK ? '' : '<p class="bad small">This browser is blocking storage (private mode?). Changes will be lost when you close the page. Make a backup before leaving.</p>'}
           <div class="btn-row">
             <button class="btn primary" data-act="importXlsx">Import Excel file</button>
@@ -588,6 +616,19 @@
     if (first && window.matchMedia('(pointer:fine)').matches) first.focus();
   }
   const showErr = (m) => { $('#dlgErr').textContent = m; };
+  function choose(title, message, options) {
+    form.innerHTML = `<h2>${esc(title)}</h2><p class="small" style="margin:0">${message}</p>
+      <div class="actions" style="flex-direction:column;align-items:stretch">${options.map((o, i) => `<button type="button" class="btn ${o.primary ? 'primary' : ''}" data-choice="${i}" style="justify-content:center">${esc(o.label)}</button>`).join('')}</div>`;
+    form.onsubmit = (e) => e.preventDefault();
+    form.onchange = form.oninput = null;
+    form.onclick = (e) => {
+      const b = e.target.closest('[data-choice]');
+      if (!b) return;
+      dlg.close();
+      options[+b.dataset.choice].fn();
+    };
+    dlg.showModal();
+  }
   function confirmBox(title, message, yesLabel, onYes) {
     openForm({ title, note: message, fields: [], onSave: () => { onYes(); }, saveLabel: yesLabel });
   }
@@ -1055,6 +1096,8 @@
     toggleTheme: () => setTheme(isDark() ? 'light' : 'dark'),
     setTheme: (el) => setTheme(el.dataset.v),
     openMenu, closeMenu,
+    cloudSignIn: () => window.cloud && window.cloud.signIn(),
+    cloudSignOut: () => window.cloud && window.cloud.signOut(),
   };
 
   document.addEventListener('click', (e) => {
@@ -1092,5 +1135,9 @@
   render();
 
   // exposed for testing in the browser console
-  window.tracker = { get state() { return S; }, totals, monthTotals, accountCalc, debtCalc };
+  window.tracker = {
+    get state() { return S; }, totals, monthTotals, accountCalc, debtCalc, hasData, render, toast, choose,
+    // used by cloud.js
+    replace(data, opts) { S = normalize(data); save(opts); render(); },
+  };
 })();
