@@ -224,6 +224,10 @@
     move: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 7h12l-3-3M17 17H5l3 3"/></svg>',
   };
 
+  const EYE = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+  const EYE_OFF = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.9 10.9 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.1M6.6 6.6A17.4 17.4 0 0 0 2 12s3.6 7 10 7a9.9 9.9 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
+  const secret = (text) => (UI.hideMoney ? '<span class="masked" aria-label="Hidden">₱ ••••••</span>' : text);
+
   function viewSummary() {
     if (!hasData()) {
       return `<section class="card">
@@ -251,12 +255,14 @@
       ${overdue.length ? `<div class="alert"><b>${overdue.length} overdue:</b> ${overdue.map((d) => esc(debtLabel(d))).join(', ')}</div>` : ''}
       <section class="card hero">
         <div class="main">
-          <div class="label">Net worth</div>
-          <div class="big">${money(t.net).replace(/^-/, '−')}</div>
+          <div class="label eye-row">Net worth
+            <button type="button" class="eye-btn" data-act="toggleHide" aria-pressed="${UI.hideMoney ? 'true' : 'false'}" aria-label="${UI.hideMoney ? 'Show amounts' : 'Hide amounts'}">${UI.hideMoney ? EYE_OFF : EYE}</button>
+          </div>
+          <div class="big">${secret(money(t.net).replace(/^-/, '−'))}</div>
           <div class="cap">Money + owed to me − what I owe · ${esc(fmtDate(todayStr()))}</div>
         </div>
-        <div class="side"><div class="label small">Total money</div><div class="v">${money(t.cash)}</div></div>
-        <div class="side"><div class="label small">I still owe</div><div class="v bad">${money(t.iOwe)}</div>${t.owedMe ? `<div class="small muted">Others owe me ${money(t.owedMe)}</div>` : ''}</div>
+        <div class="side"><div class="label small">Total money</div><div class="v">${secret(money(t.cash))}</div></div>
+        <div class="side"><div class="label small">I still owe</div><div class="v bad">${secret(money(t.iOwe))}</div>${t.owedMe ? `<div class="small muted">Others owe me ${secret(money(t.owedMe))}</div>` : ''}</div>
       </section>
 
       <section>
@@ -266,7 +272,7 @@
             <span class="head"><span class="name">${esc(a.name)}</span><span class="dot"></span></span>
             <span><span class="bal${bal < 0 ? ' bad' : ''}">${money(bal)}</span><br><span class="type">${esc(a.type || '')}</span></span>
           </button>`).join('')}
-          <div class="acct total"><span class="head"><span class="name">Total money</span></span><span><span class="bal">${money(t.cash)}</span><br><span class="type">${S.accounts.length} accounts</span></span></div>
+          <div class="acct total"><span class="head"><span class="name">Total money</span></span><span><span class="bal">${secret(money(t.cash))}</span><br><span class="type">${S.accounts.length} accounts</span></span></div>
         </div>
         <div class="strip-dots" id="stripDots" aria-hidden="true">${Array.from({ length: dots }, (_, i) => `<span${i === 0 ? ' class="on"' : ''}></span>`).join('')}</div>
       </section>
@@ -1122,6 +1128,7 @@
     goBudget: () => { UI.tab = 'budget'; UI.month = todayStr().slice(0, 7); saveUI(); render(); },
     prevMonth: () => { UI.month = shiftMonth(UI.month, -1); saveUI(); render(); },
     nextMonth: () => { UI.month = shiftMonth(UI.month, 1); saveUI(); render(); },
+    toggleHide: () => { UI.hideMoney = !UI.hideMoney; saveUI(); render(); },
     togglePaid: () => { UI.showPaid = !UI.showPaid; saveUI(); render(); },
     addTx: () => editTx(), addDebt: () => editDebt(), addPayment: () => editPayment(), addAccount: () => editAccount(),
     addTransfer: () => editTransfer(), addCategory: () => editCategory(),
