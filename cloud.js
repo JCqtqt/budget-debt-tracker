@@ -1,6 +1,6 @@
 // Cloud sync with Firebase: Google sign-in + one private Firestore document per user.
 // The app keeps working offline from the browser copy; this file mirrors it to the cloud.
-import { firebaseConfig } from './firebase-config.js?v=8';
+import { firebaseConfig } from './firebase-config.js?v=9';
 
 const SDK = 'https://www.gstatic.com/firebasejs/10.12.2/';
 const DEVICE_KEY = 'budget-debt-tracker:v1:device';
@@ -35,6 +35,9 @@ function deviceId() {
 
 async function start() {
   if (!firebaseConfig || !firebaseConfig.apiKey) return; // cloud sync not set up
+  cloud.pending = true; // show a short loading screen instead of flashing the sign-in page
+  rerender();
+  const giveUp = setTimeout(() => { if (cloud.pending) { cloud.pending = false; rerender(); } }, 8000);
   let appMod, authMod, fsMod;
   try {
     [appMod, authMod, fsMod] = await Promise.all([
@@ -44,6 +47,7 @@ async function start() {
     ]);
   } catch (e) {
     console.warn('Firebase could not load; cloud sync is off for now.', e);
+    clearTimeout(giveUp); cloud.pending = false; rerender();
     return;
   }
   const { initializeApp } = appMod;
@@ -185,6 +189,8 @@ async function start() {
     ref = null; lastJson = '';
     cloud.user = user ? { displayName: user.displayName, email: user.email, photoURL: user.photoURL, uid: user.uid } : null;
     cloud.status = 'off';
+    cloud.ready = true; cloud.pending = false; clearTimeout(giveUp);
+    if (user && T().signedIn) T().signedIn();
     rerender();
     if (user) connect(user);
   });

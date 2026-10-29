@@ -572,7 +572,54 @@
 
   const VIEWS = { summary: viewSummary, budget: viewBudget, accounts: viewAccounts, debts: viewDebts, payments: viewPayments, settings: viewSettings };
 
+  // signed-out users see the sign-in page (unless they chose "this device only")
+  function gateState() {
+    const c = window.cloud;
+    if (!c) return '';
+    if (c.pending && !c.ready) return 'loading';
+    if (c.enabled && c.ready && !c.user && !UI.localOnly) return 'signin';
+    return '';
+  }
+  const LOCK = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
+  function viewSignIn() {
+    return `<div class="signin">
+      <section class="si-hero">
+        <div class="si-brand"><img src="assets/sawada-logo.png" alt="SAWADA logo" width="48" height="48"><span><b>SAWADA<i>.</i></b> Budget Tracker</span></div>
+        <div class="si-copy">
+          <h1>Know where every peso goes<i>.</i></h1>
+          <p>Your accounts, budget and debts in one place. Track installments, see what's due next, and sync between your phone and computer.</p>
+        </div>
+        <div class="si-preview" aria-hidden="true">
+          <div class="si-tile wide"><span>Net worth</span><b>₱ ••••••</b><div class="si-bar"><span></span></div></div>
+          <div class="si-tile"><span>Next due</span><b>Installments</b></div>
+          <div class="si-tile"><span>Accounts</span><b>Synced</b></div>
+        </div>
+      </section>
+      <section class="si-panel">
+        <div class="si-card">
+          <img class="si-logo" src="assets/sawada-logo.png" alt="" width="56" height="56">
+          <div class="si-kicker">SAWADA<i>.</i> Budget Tracker</div>
+          <h2>Welcome back</h2>
+          <p class="muted">Sign in to load your tracker on this device.</p>
+          <button type="button" class="btn gbtn si-google" data-act="cloudSignIn">${GOOGLE_G} Continue with Google</button>
+          <div class="si-or"><span></span>or<span></span></div>
+          <button type="button" class="btn si-local" data-act="useLocal">Use on this device only</button>
+          <div class="si-note">${LOCK}<span>Private to your Google account. Nobody else can see your data.</span></div>
+        </div>
+      </section>
+    </div>`;
+  }
+
   function render() {
+    const gate = gateState();
+    document.body.classList.toggle('gated', !!gate);
+    if (gate) {
+      closeMenu();
+      $('#view').innerHTML = gate === 'loading'
+        ? '<div class="si-loading"><img src="assets/sawada-logo.png" alt="Loading" width="72" height="72"></div>'
+        : viewSignIn();
+      return;
+    }
     if (!VIEWS[UI.tab]) UI.tab = 'summary';
     $('#tabs').innerHTML = TABS.map(([k, l]) => `<button class="tab${UI.tab === k ? ' on' : ''}" data-tab="${k}" ${UI.tab === k ? 'aria-current="page"' : ''}>${l}</button>`).join('');
     $('#view').innerHTML = VIEWS[UI.tab]();
@@ -1136,6 +1183,7 @@
     setTheme: (el) => setTheme(el.dataset.v),
     openMenu, closeMenu,
     cloudSignIn: () => { closeMenu(); if (window.cloud) window.cloud.signIn(); },
+    useLocal: () => { UI.localOnly = true; saveUI(); render(); },
     cloudSignOut: () => { acctOpen = false; closeMenu(); if (window.cloud) window.cloud.signOut(); },
     toggleAcctMenu: () => { acctOpen = !acctOpen; renderAuth(); },
   };
@@ -1180,6 +1228,7 @@
     get state() { return S; }, totals, monthTotals, accountCalc, debtCalc, hasData, render, toast, choose,
     // used by cloud.js
     replace(data, opts) { S = normalize(data); save(opts); render(); },
-    clearLocal() { S = blank(); try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } UI.tab = 'summary'; saveUI(); render(); },
+    signedIn() { if (UI.localOnly) { UI.localOnly = false; saveUI(); } },
+    clearLocal() { S = blank(); try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } UI.tab = 'summary'; UI.localOnly = false; saveUI(); render(); },
   };
 })();
