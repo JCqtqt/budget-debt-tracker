@@ -227,6 +227,31 @@
   const EYE = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
   const EYE_OFF = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.9 10.9 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.1M6.6 6.6A17.4 17.4 0 0 0 2 12s3.6 7 10 7a9.9 9.9 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
   const secret = (text) => (UI.hideMoney ? '<span class="masked" aria-label="Hidden">₱ ••••••</span>' : text);
+  // an amount that counts up when the page opens
+  const countUp = (n) => (UI.hideMoney ? secret('') : `<span data-count="${(+n || 0).toFixed(2)}">${money(n).replace(/^-/, '−')}</span>`);
+
+  function greeting() {
+    const h = new Date().getHours();
+    const part = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+    const u = window.cloud && window.cloud.user;
+    const first = u && u.displayName ? u.displayName.trim().split(/\s+/)[0] : '';
+    const today = new Date().toLocaleDateString('en-PH', { weekday: 'long', month: 'long', day: 'numeric' });
+    // the soonest upcoming payment you owe
+    let next = null;
+    for (const d of S.debts) {
+      if (d.type === OWED) continue;
+      const c = debtCalc(d);
+      if (c.balance > 0 && c.next && (!next || c.next < next.date)) {
+        const what = (d.description || '').replace(/\s*\(.*\)\s*$/, '').replace(/\s+installment$/i, '');
+        next = { date: c.next, label: what || d.person, amt: c.inst ? Math.min(c.monthly, c.balance) : c.balance, overdue: c.status === 'Overdue' };
+      }
+    }
+    const nextTxt = next ? `${next.overdue ? '<b class="bad">Overdue</b>' : 'Next payment'}: ${esc(next.label)} · ${UI.hideMoney ? '₱ •••' : money(next.amt)} on ${esc(fmtDate(next.date).replace(/, \d{4}$/, ''))}` : '';
+    return `<section class="greet">
+      <h1>${part}${first ? ', ' + esc(first) : ''}<i>.</i></h1>
+      <p>${esc(today)}${nextTxt ? ' · ' + nextTxt : ''}</p>
+    </section>`;
+  }
 
   function viewSummary() {
     if (!hasData()) {
@@ -253,22 +278,23 @@
 
     return `
       ${overdue.length ? `<div class="alert"><b>${overdue.length} overdue:</b> ${overdue.map((d) => esc(debtLabel(d))).join(', ')}</div>` : ''}
+      ${greeting()}
       <section class="card hero">
         <div class="main">
           <div class="label eye-row">Net worth
             <button type="button" class="eye-btn" data-act="toggleHide" aria-pressed="${UI.hideMoney ? 'true' : 'false'}" aria-label="${UI.hideMoney ? 'Show amounts' : 'Hide amounts'}">${UI.hideMoney ? EYE_OFF : EYE}</button>
           </div>
-          <div class="big">${secret(money(t.net).replace(/^-/, '−'))}</div>
+          <div class="big">${countUp(t.net)}</div>
           <div class="cap">Money + owed to me − what I owe · ${esc(fmtDate(todayStr()))}</div>
         </div>
-        <div class="side"><div class="label small">Total money</div><div class="v">${secret(money(t.cash))}</div></div>
-        <div class="side"><div class="label small">I still owe</div><div class="v bad">${secret(money(t.iOwe))}</div>${t.owedMe ? `<div class="small muted">Others owe me ${secret(money(t.owedMe))}</div>` : ''}</div>
+        <div class="side"><div class="label small">Total money</div><div class="v">${countUp(t.cash)}</div></div>
+        <div class="side"><div class="label small">I still owe</div><div class="v bad">${countUp(t.iOwe)}</div>${t.owedMe ? `<div class="small muted">Others owe me ${secret(money(t.owedMe))}</div>` : ''}</div>
       </section>
 
       <section>
         <div class="sec-head"><h2>Accounts <span class="muted">· ${S.accounts.length}</span></h2><button class="link" data-act="addAccount">+ Add</button></div>
         <div class="acct-strip" id="acctStrip" aria-label="Accounts">
-          ${accts.map(({ a, bal }) => `<button type="button" class="acct${Math.abs(bal) < 0.005 ? ' zero' : ''}" data-edit="account" data-uid="${a.uid}">
+          ${accts.map(({ a, bal }, i) => `<button type="button" class="acct${Math.abs(bal) < 0.005 ? ' zero' : ''}" style="--i:${i}" data-edit="account" data-uid="${a.uid}">
             <span class="head"><span class="name">${esc(a.name)}</span><span class="dot"></span></span>
             <span><span class="bal${bal < 0 ? ' bad' : ''}">${money(bal)}</span><br><span class="type">${esc(a.type || '')}</span></span>
           </button>`).join('')}
@@ -280,7 +306,7 @@
       <section>
         <div class="sec-head"><h2>Recent transactions</h2><button class="link" data-act="goBudget">See all</button></div>
         <div class="card pad0"><div class="tx-list">
-          ${recent.length ? recent.map((r) => `<div class="tx-item" data-edit="${r.kind}" data-uid="${r.uid}" tabindex="0" role="button">
+          ${recent.length ? recent.map((r, i) => `<div class="tx-item" style="--i:${i}" data-edit="${r.kind}" data-uid="${r.uid}" tabindex="0" role="button">
             <span class="tx-ico ${r.dir === 'out' ? 'out' : ''}">${ICON[r.dir]}</span>
             <span class="tx-main"><b>${esc(r.title)}</b><span>${esc(r.sub)}</span></span>
             <span class="tx-amt">${esc(r.amt)}</span>
@@ -610,19 +636,56 @@
     </div>`;
   }
 
+  let shownPage = '';
+  const reduceMotion = () => window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function enterAnimation(page) {
+    const v = $('#view');
+    if (page === shownPage) return;
+    shownPage = page;
+    v.classList.remove('enter'); void v.offsetWidth; v.classList.add('enter');
+    runCounters();
+  }
+  function runCounters() {
+    const els = document.querySelectorAll('#view [data-count]');
+    if (!els.length || reduceMotion()) return;
+    const start = performance.now(), dur = 900;
+    const ease = (x) => 1 - Math.pow(1 - x, 3);
+    const tick = (now) => {
+      const k = Math.min(1, (now - start) / dur);
+      els.forEach((el) => { const n = +el.dataset.count * ease(k); el.textContent = money(n).replace(/^-/, '−'); });
+      if (k < 1) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+
+  // loading screen: stays until we know whether you're signed in
+  let splashReady = false, splashGone = false;
+  function maybeHideSplash() {
+    if (splashGone || !splashReady || gateState() === 'loading') return;
+    splashGone = true;
+    const el = $('#splash');
+    if (!el) return;
+    setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 500); }, Math.max(0, 900 - performance.now()));
+  }
+  document.addEventListener('DOMContentLoaded', () => { splashReady = true; maybeHideSplash(); });
+  setTimeout(() => { splashReady = true; maybeHideSplash(); }, 0);
+
   function render() {
     const gate = gateState();
     document.body.classList.toggle('gated', !!gate);
+    maybeHideSplash();
     if (gate) {
       closeMenu();
       $('#view').innerHTML = gate === 'loading'
         ? '<div class="si-loading"><img src="assets/sawada-logo.png" alt="Loading" width="72" height="72"></div>'
         : viewSignIn();
+      if (gate === 'signin') enterAnimation('signin');
       return;
     }
     if (!VIEWS[UI.tab]) UI.tab = 'summary';
     $('#tabs').innerHTML = TABS.map(([k, l]) => `<button class="tab${UI.tab === k ? ' on' : ''}" data-tab="${k}" ${UI.tab === k ? 'aria-current="page"' : ''}>${l}</button>`).join('');
     $('#view').innerHTML = VIEWS[UI.tab]();
+    enterAnimation(UI.tab + (hasData() ? '' : ':empty'));
     $('#drawerNav').innerHTML = TABS.map(([k, l]) => `<button type="button" class="${UI.tab === k ? 'on' : ''}" data-tab="${k}" ${UI.tab === k ? 'aria-current="page"' : ''}>${l}</button>`).join('');
     $('#pageTitle').textContent = (TABS.find(([k]) => k === UI.tab) || [, ''])[1];
     renderAuth();

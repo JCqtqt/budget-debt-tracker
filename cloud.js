@@ -1,6 +1,6 @@
 // Cloud sync with Firebase: Google sign-in + one private Firestore document per user.
 // The app keeps working offline from the browser copy; this file mirrors it to the cloud.
-import { firebaseConfig } from './firebase-config.js?v=9';
+import { firebaseConfig } from './firebase-config.js?v=10';
 
 const SDK = 'https://www.gstatic.com/firebasejs/10.12.2/';
 const DEVICE_KEY = 'budget-debt-tracker:v1:device';
