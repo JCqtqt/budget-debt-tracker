@@ -230,7 +230,7 @@
         <h2>Welcome</h2>
         <p>Start by loading your Excel tracker (<b>Budget_Debt_Tracker.xlsx</b>). Your accounts, debts, payments and budget will be copied in.</p>
         <p class="muted small">Your data is saved only in this browser on this device. It is never uploaded, and it is not in the GitHub repo.</p>
-        ${window.cloud && window.cloud.enabled && !window.cloud.user ? `<div class="cloud-hero"><p style="margin:0"><b>Already use this on another device?</b> Sign in to load your data.</p><button class="btn gbtn" data-act="cloudSignIn">${GOOGLE_G} Sign in with Google</button></div>` : ''}
+        ${window.cloud && window.cloud.enabled && !window.cloud.user ? `<div class="cloud-hero"><p style="margin:0"><b>Have a cloud account?</b> Sign in to load your data.</p><button class="btn gbtn" data-act="cloudSignIn">${GOOGLE_G} Sign in with Google</button></div>` : ''}
         <div class="btn-row"><button class="btn primary" data-act="importXlsx">Import Excel file</button>
         <button class="btn" data-act="restoreJson">Restore a backup</button>
         <button class="btn" data-act="goSettings">Start from scratch</button></div>
@@ -474,6 +474,37 @@
   }
 
   const GOOGLE_G = '<svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>';
+  let acctOpen = false;
+  function avatarHTML(u, size) {
+    const initial = esc((u.displayName || u.email || '?').trim().charAt(0).toUpperCase());
+    return u.photoURL
+      ? `<img class="avatar-img" src="${esc(u.photoURL)}" alt="" width="${size}" height="${size}" referrerpolicy="no-referrer">`
+      : `<span class="avatar" style="width:${size}px;height:${size}px">${initial}</span>`;
+  }
+  function renderAuth() {
+    const c = window.cloud, slot = $('#authSlot'), side = $('#drawerAuth');
+    if (!c || !c.enabled) { slot.innerHTML = ''; side.innerHTML = ''; return; }
+    if (!c.user) {
+      acctOpen = false;
+      slot.innerHTML = `<button type="button" class="btn gbtn" data-act="cloudSignIn">${GOOGLE_G} Sign in</button>`;
+      side.innerHTML = `<p class="small muted" style="margin:0 0 10px">Sign in to save your data online and use it on all your devices.</p>
+        <button type="button" class="btn gbtn wide" data-act="cloudSignIn">${GOOGLE_G} Sign in with Google</button>`;
+      return;
+    }
+    const u = c.user;
+    slot.innerHTML = `<div class="acct-menu">
+        <button type="button" class="avatar-btn" data-act="toggleAcctMenu" aria-label="Account: ${esc(u.email || '')}" aria-expanded="${acctOpen}">${avatarHTML(u, 36)}<span class="sync-dot ${esc(c.status)} on-avatar"></span></button>
+        <div class="pop" ${acctOpen ? '' : 'hidden'}>
+          <div class="who">${avatarHTML(u, 40)}<div><b>${esc(u.displayName || 'Signed in')}</b><div class="small muted">${esc(u.email || '')}</div></div></div>
+          <p class="small" style="margin:12px 0"><span class="sync-dot ${esc(c.status)}"></span>${esc(c.statusText())}</p>
+          <button type="button" class="btn wide" data-act="cloudSignOut">Sign out</button>
+        </div>
+      </div>`;
+    side.innerHTML = `<div class="who">${avatarHTML(u, 36)}<div style="min-width:0"><b>${esc(u.displayName || 'Signed in')}</b><div class="small muted ellip">${esc(u.email || '')}</div></div></div>
+      <p class="small" style="margin:10px 0"><span class="sync-dot ${esc(c.status)}"></span>${esc(c.statusText())}</p>
+      <button type="button" class="btn wide" data-act="cloudSignOut">Sign out</button>`;
+  }
+
   function cloudCard() {
     const c = window.cloud;
     if (!c || !c.enabled) return '';
@@ -494,7 +525,7 @@
         </div>
         <p class="small" style="margin:12px 0"><span class="sync-dot ${esc(c.status)}"></span>${esc(c.statusText())}</p>
         <button class="btn" data-act="cloudSignOut">Sign out</button>
-        <p class="muted small" style="margin-bottom:0">Signing out keeps a copy in this browser.</p>
+        <p class="muted small" style="margin-bottom:0">Signing out removes your data from this browser. It stays safe in your cloud account.</p>
       </div>`;
   }
 
@@ -541,6 +572,7 @@
     $('#view').innerHTML = VIEWS[UI.tab]();
     $('#drawerNav').innerHTML = TABS.map(([k, l]) => `<button type="button" class="${UI.tab === k ? 'on' : ''}" data-tab="${k}" ${UI.tab === k ? 'aria-current="page"' : ''}>${l}</button>`).join('');
     $('#pageTitle').textContent = (TABS.find(([k]) => k === UI.tab) || [, ''])[1];
+    renderAuth();
     syncThemeButton();
     if (!storageOK && !render.warned) { render.warned = true; toast('Browser storage is blocked — changes will not be saved.', 5000); }
   }
@@ -1096,12 +1128,14 @@
     toggleTheme: () => setTheme(isDark() ? 'light' : 'dark'),
     setTheme: (el) => setTheme(el.dataset.v),
     openMenu, closeMenu,
-    cloudSignIn: () => window.cloud && window.cloud.signIn(),
-    cloudSignOut: () => window.cloud && window.cloud.signOut(),
+    cloudSignIn: () => { closeMenu(); if (window.cloud) window.cloud.signIn(); },
+    cloudSignOut: () => { acctOpen = false; closeMenu(); if (window.cloud) window.cloud.signOut(); },
+    toggleAcctMenu: () => { acctOpen = !acctOpen; renderAuth(); },
   };
 
   document.addEventListener('click', (e) => {
     if (e.target.closest('dialog')) return;
+    if (acctOpen && !e.target.closest('.acct-menu')) { acctOpen = false; renderAuth(); }
     const el = e.target.closest('[data-tab],[data-act],[data-edit]');
     if (!el || el.disabled) return;
     if (el.dataset.tab) { closeMenu(); UI.tab = el.dataset.tab; saveUI(); render(); window.scrollTo(0, 0); return; }
@@ -1111,7 +1145,7 @@
     if (fn) fn(el);
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeMenu();
+    if (e.key === 'Escape') { closeMenu(); if (acctOpen) { acctOpen = false; renderAuth(); } }
     if (e.key === 'Enter' && e.target.matches && e.target.matches('tr[data-edit],.tx-item[data-edit]')) EDIT[e.target.dataset.edit](e.target.dataset.uid);
   });
   document.addEventListener('change', (e) => {
@@ -1139,5 +1173,6 @@
     get state() { return S; }, totals, monthTotals, accountCalc, debtCalc, hasData, render, toast, choose,
     // used by cloud.js
     replace(data, opts) { S = normalize(data); save(opts); render(); },
+    clearLocal() { S = blank(); try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } UI.tab = 'summary'; saveUI(); render(); },
   };
 })();

@@ -1,6 +1,6 @@
 // Cloud sync with Firebase: Google sign-in + one private Firestore document per user.
 // The app keeps working offline from the browser copy; this file mirrors it to the cloud.
-import { firebaseConfig } from './firebase-config.js?v=4';
+import { firebaseConfig } from './firebase-config.js?v=6';
 
 const SDK = 'https://www.gstatic.com/firebasejs/10.12.2/';
 const DEVICE_KEY = 'budget-debt-tracker:v1:device';
@@ -97,9 +97,35 @@ async function start() {
     }
   };
 
-  cloud.signOut = async () => {
+  async function finishSignOut() {
+    clearTimeout(timer);
+    if (unsub) { unsub(); unsub = null; }
+    ref = null; lastJson = '';
     await signOut(auth);
-    T().toast('Signed out. Your data is still saved in this browser.');
+    T().clearLocal();
+    T().toast('Signed out. Your data is safe in your cloud account.');
+  }
+
+  cloud.signOut = async () => {
+    // make sure the latest changes reach the cloud before clearing this browser
+    clearTimeout(timer);
+    const json = JSON.stringify(T().state);
+    if (ref && json !== lastJson) {
+      try {
+        await setDoc(ref, { data: json, updatedAt: Date.now(), device: me, v: 1 });
+        lastJson = json;
+      } catch (e) {
+        console.error(e);
+        T().choose('Not saved to the cloud yet',
+          'Your latest changes could not be uploaded (are you offline?). If you sign out now, those changes will be lost.',
+          [
+            { label: 'Stay signed in', primary: true, fn: () => {} },
+            { label: 'Sign out anyway', fn: () => { finishSignOut(); } },
+          ]);
+        return;
+      }
+    }
+    await finishSignOut();
   };
 
   getRedirectResult(auth).catch((e) => console.warn(e));
