@@ -161,10 +161,35 @@
   // ---------- views ----------
   const TABS = [['summary', 'Summary'], ['budget', 'Budget'], ['accounts', 'Accounts'], ['debts', 'Debts'], ['payments', 'Payments'], ['settings', 'Settings']];
 
+  function recentItems(limit) {
+    const items = [];
+    for (const t of S.transactions) {
+      const inc = catType(t.category) === 'Income';
+      items.push({ date: t.date, uid: t.uid, kind: 'tx', dir: inc ? 'in' : 'out', title: t.description || t.category,
+        sub: [t.category, t.account, fmtDate(t.date)].filter(Boolean).join(' · '), amt: (inc ? '+' : '−') + money(t.amount) });
+    }
+    for (const p of S.payments) {
+      const d = debtById(p.debtId), owe = payType(p) !== OWED;
+      const what = d ? (d.description || '').replace(/\s*\(.*\)\s*$/, '').replace(/\s+installment$/i, '') : '';
+      items.push({ date: p.date, uid: p.uid, kind: 'payment', dir: owe ? 'out' : 'in', title: d ? d.person + (what ? ' · ' + what : '') : 'Debt payment',
+        sub: [owe ? 'Debt payment' : 'Paid back to me', p.account, fmtDate(p.date)].filter(Boolean).join(' · '), amt: (owe ? '−' : '+') + money(p.amount) });
+    }
+    for (const t of S.transfers) {
+      items.push({ date: t.date, uid: t.uid, kind: 'transfer', dir: 'move', title: `${t.from} → ${t.to}`, sub: ['Transfer', fmtDate(t.date)].join(' · '), amt: money(t.amount) });
+    }
+    items.sort((x, y) => (y.date || '').localeCompare(x.date || '') || y.uid - x.uid);
+    return items.slice(0, limit);
+  }
+  const ICON = {
+    out: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17L17 7M9 7h8v8"/></svg>',
+    in: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 7L7 17M15 17H7V9"/></svg>',
+    move: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 7h12l-3-3M17 17H5l3 3"/></svg>',
+  };
+
   function viewSummary() {
     if (!hasData()) {
       return `<section class="card">
-        <h2>Welcome 👋</h2>
+        <h2>Welcome</h2>
         <p>Start by loading your Excel tracker (<b>Budget_Debt_Tracker.xlsx</b>). Your accounts, debts, payments and budget will be copied in.</p>
         <p class="muted small">Your data is saved only in this browser on this device. It is never uploaded, and it is not in the GitHub repo.</p>
         <div class="btn-row"><button class="btn primary" data-act="importXlsx">Import Excel file</button>
@@ -179,54 +204,77 @@
     const overdue = S.debts.filter((d) => debtCalc(d).status === 'Overdue');
     const open = S.debts.filter((d) => debtCalc(d).balance > 0);
     const people = Object.entries(t.people).filter(([, p]) => Math.abs(p.owe) > 0.004 || Math.abs(p.me) > 0.004);
+    const accts = S.accounts.map((a) => ({ a, bal: accountCalc(a).current })).sort((x, y) => y.bal - x.bal);
+    const dots = Math.min(5, Math.max(1, Math.ceil((accts.length + 1) / 2)));
+    const recent = recentItems(6);
 
     return `
       ${overdue.length ? `<div class="alert"><b>${overdue.length} overdue:</b> ${overdue.map((d) => esc(debtLabel(d))).join(', ')}</div>` : ''}
-      <section class="grid">
-        ${stat('Total money', money(t.cash), `${S.accounts.length} account${S.accounts.length === 1 ? '' : 's'}`, 'good')}
-        ${stat('I still owe', money(t.iOwe), t.odOwe ? `<span class="bad">${money(t.odOwe)} overdue</span>` : '', t.iOwe > 0 ? 'bad' : '')}
-        ${stat('Others owe me', money(t.owedMe), t.odMe ? `<span class="bad">${money(t.odMe)} overdue</span>` : '')}
-        ${stat('Net worth', money(t.net), 'money + owed to me − I owe', t.net < 0 ? 'bad' : '')}
+      <section class="card hero">
+        <div class="main">
+          <div class="label">Net worth</div>
+          <div class="big">${money(t.net).replace(/^-/, '−')}</div>
+          <div class="cap">Money + owed to me − what I owe · ${esc(fmtDate(todayStr()))}</div>
+        </div>
+        <div class="side"><div class="label small">Total money</div><div class="v">${money(t.cash)}</div></div>
+        <div class="side"><div class="label small">I still owe</div><div class="v bad">${money(t.iOwe)}</div>${t.owedMe ? `<div class="small muted">Others owe me ${money(t.owedMe)}</div>` : ''}</div>
       </section>
 
       <section>
-        <div class="sec-head"><h2>This month · ${esc(monthLabel(ym))}</h2><button class="btn sm" data-act="goBudget">Open budget</button></div>
-        <div class="grid">
-          ${stat('Income', money(m.ai), `of ${money(m.bi)} expected`)}
-          ${stat('Expenses', money(m.ae), `of ${money(m.be)} budget`)}
-          ${stat('Money left', money(left), 'income − expenses', left < 0 ? 'bad' : 'good')}
+        <div class="sec-head"><h2>Accounts <span class="muted">· ${S.accounts.length}</span></h2><button class="link" data-act="addAccount">+ Add</button></div>
+        <div class="acct-strip" id="acctStrip" aria-label="Accounts">
+          ${accts.map(({ a, bal }) => `<button type="button" class="acct${Math.abs(bal) < 0.005 ? ' zero' : ''}" data-edit="account" data-uid="${a.uid}">
+            <span class="head"><span class="name">${esc(a.name)}</span><span class="dot"></span></span>
+            <span><span class="bal${bal < 0 ? ' bad' : ''}">${money(bal)}</span><br><span class="type">${esc(a.type || '')}</span></span>
+          </button>`).join('')}
+          <div class="acct total"><span class="head"><span class="name">Total money</span></span><span><span class="bal">${money(t.cash)}</span><br><span class="type">${S.accounts.length} accounts</span></span></div>
         </div>
+        <div class="strip-dots" id="stripDots" aria-hidden="true">${Array.from({ length: dots }, (_, i) => `<span${i === 0 ? ' class="on"' : ''}></span>`).join('')}</div>
       </section>
 
       <section>
-        <div class="sec-head"><h2>Open debts</h2><button class="btn sm" data-act="addPayment">+ Payment</button></div>
-        <div class="card">${open.length ? `<div class="dlist">${open.map((d) => {
-          const c = debtCalc(d);
-          return `<div class="ditem">
-            <div class="top-line"><b>${esc(d.person)}</b><span class="num"><b>${money(c.balance)}</b> left</span></div>
-            <div class="meta">${typePill(d.type)} ${esc(d.description || '')} · paid ${money(c.paid)} of ${money(d.amount)} ${statusPill(c.status)}</div>
-            ${bar(pct(c.paid, num(d.amount)), c.status === 'Overdue' ? 'bad' : 'good')}
-          </div>`;
-        }).join('')}</div>` : '<p class="empty">No open debts. 🎉</p>'}</div>
+        <div class="sec-head"><h2>Recent transactions</h2><button class="link" data-act="goBudget">See all</button></div>
+        <div class="card pad0"><div class="tx-list">
+          ${recent.length ? recent.map((r) => `<div class="tx-item" data-edit="${r.kind}" data-uid="${r.uid}" tabindex="0" role="button">
+            <span class="tx-ico ${r.dir === 'out' ? 'out' : ''}">${ICON[r.dir]}</span>
+            <span class="tx-main"><b>${esc(r.title)}</b><span>${esc(r.sub)}</span></span>
+            <span class="tx-amt">${esc(r.amt)}</span>
+          </div>`).join('') : '<p class="empty">Nothing logged yet.</p>'}
+        </div></div>
       </section>
 
-      <section class="grid one-sm" style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr))">
-        <div>
-          <div class="sec-head"><h2>By person</h2></div>
-          <div class="card pad0 table-wrap"><table>
-            <thead><tr><th>Person</th><th class="num">I owe</th><th class="num">Owes me</th><th class="num">Net</th></tr></thead>
-            <tbody>${people.length ? people.map(([n, p]) => `<tr><td>${esc(n)}</td><td class="num">${money(p.owe)}</td><td class="num">${money(p.me)}</td><td class="num ${p.me - p.owe < 0 ? 'bad' : 'good'}">${money(p.me - p.owe)}</td></tr>`).join('') : emptyRow(4, 'Nothing owed.')}</tbody>
-          </table></div>
+      <section class="cols">
+        <div class="card">
+          <div class="sec-head"><h2>Open debts</h2><button class="link" data-act="addPayment">+ Payment</button></div>
+          ${open.length ? `<div class="dlist">${open.map((d) => {
+            const c = debtCalc(d);
+            const what = (d.description || '').replace(/\s*\(.*\)\s*$/, '').replace(/\s+installment$/i, '');
+            return `<div class="ditem">
+              <div class="top-line"><span>${esc(d.person)}${what ? ` <span class="muted">· ${esc(what)}</span>` : ''}</span><b>${money(c.balance)}</b></div>
+              ${bar(pct(c.paid, num(d.amount)))}
+              <div class="meta"><span>${money(c.paid)} of ${money(d.amount)} paid</span><span>${d.type === OWED ? 'Owed to me · ' : ''}${statusPill(c.status)}</span></div>
+            </div>`;
+          }).join('')}</div>` : '<p class="empty">No open debts.</p>'}
         </div>
-        <div>
-          <div class="sec-head"><h2>Accounts</h2></div>
-          <div class="card pad0 table-wrap"><table>
-            <thead><tr><th>Account</th><th class="num">Balance</th></tr></thead>
-            <tbody>${S.accounts.length ? S.accounts.map((a) => { const c = accountCalc(a); return `<tr><td>${esc(a.name)}</td><td class="num ${c.current < 0 ? 'bad' : ''}">${money(c.current)}</td></tr>`; }).join('') : emptyRow(2, 'No accounts yet.')}</tbody>
-            <tfoot><tr><td>Total</td><td class="num">${money(t.cash)}</td></tr></tfoot>
-          </table></div>
+        <div class="card">
+          <div class="sec-head"><h2>${esc(monthLabel(ym))}</h2><button class="link" data-act="goBudget">Budget</button></div>
+          <div class="grid">
+            ${stat('Income', money(m.ai), `of ${money(m.bi)} expected`)}
+            ${stat('Spent', money(m.ae), `of ${money(m.be)} budget`)}
+          </div>
+          <div style="margin-top:14px" class="small muted">Money left this month</div>
+          <div class="stat"><div class="value ${left < 0 ? 'bad' : ''}">${money(left).replace(/^-/, '−')}</div></div>
+          ${m.be ? bar(pct(m.ae, m.be)) : ''}
         </div>
-      </section>`;
+      </section>
+
+      ${people.length > 1 ? `<section>
+        <div class="sec-head"><h2>By person</h2></div>
+        <div class="card pad0 table-wrap"><table>
+          <thead><tr><th>Person</th><th class="num">I owe</th><th class="num">Owes me</th><th class="num">Net</th></tr></thead>
+          <tbody>${people.map(([n, p]) => `<tr><td>${esc(n)}</td><td class="num">${money(p.owe)}</td><td class="num">${money(p.me)}</td><td class="num ${p.me - p.owe < 0 ? 'bad' : ''}">${money(p.me - p.owe)}</td></tr>`).join('')}</tbody>
+        </table></div>
+      </section>` : ''}`;
   }
 
   function viewBudget() {
@@ -413,9 +461,8 @@
       <section>
         <div class="sec-head"><h2>Appearance</h2></div>
         <div class="card btn-row">
-          <button class="btn sm" data-act="theme" data-v="">Match device</button>
-          <button class="btn sm" data-act="theme" data-v="light">Light</button>
-          <button class="btn sm" data-act="theme" data-v="dark">Dark</button>
+          <button class="btn sm" data-act="setTheme" data-v="light">Light</button>
+          <button class="btn sm" data-act="setTheme" data-v="dark">Dark</button>
         </div>
       </section>`;
   }
@@ -426,7 +473,10 @@
     if (!VIEWS[UI.tab]) UI.tab = 'summary';
     $('#tabs').innerHTML = TABS.map(([k, l]) => `<button class="tab${UI.tab === k ? ' on' : ''}" data-tab="${k}" ${UI.tab === k ? 'aria-current="page"' : ''}>${l}</button>`).join('');
     $('#view').innerHTML = VIEWS[UI.tab]();
-    $('#saveNote').textContent = storageOK ? 'Saved in this browser' : 'Not saved — browser storage is blocked';
+    $('#drawerNav').innerHTML = TABS.map(([k, l]) => `<button type="button" class="${UI.tab === k ? 'on' : ''}" data-tab="${k}" ${UI.tab === k ? 'aria-current="page"' : ''}>${l}</button>`).join('');
+    $('#pageTitle').textContent = (TABS.find(([k]) => k === UI.tab) || [, ''])[1];
+    syncThemeButton();
+    if (!storageOK && !render.warned) { render.warned = true; toast('Browser storage is blocked — changes will not be saved.', 5000); }
   }
 
   // ---------- dialog forms ----------
@@ -891,10 +941,29 @@
   }
 
   // ---------- theme ----------
-  function applyTheme() {
-    let th = '';
-    try { th = localStorage.getItem(KEY + ':theme') || ''; } catch (e) { /* ignore */ }
-    if (th) document.documentElement.setAttribute('data-theme', th); else document.documentElement.removeAttribute('data-theme');
+  const isDark = () => document.documentElement.getAttribute('data-theme') === 'dark';
+  function setTheme(th) {
+    document.documentElement.setAttribute('data-theme', th);
+    try { localStorage.setItem(KEY + ':theme', th); } catch (e) { /* ignore */ }
+    syncThemeButton();
+  }
+  function syncThemeButton() {
+    const b = $('#themeBtn');
+    if (b) b.setAttribute('aria-label', isDark() ? 'Switch to light mode' : 'Switch to dark mode');
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', isDark() ? '#0A0F16' : '#FFFFFF');
+  }
+
+  // ---------- phone menu ----------
+  function openMenu() {
+    $('#drawer').hidden = false;
+    document.querySelector('.burger').setAttribute('aria-expanded', 'true');
+    const on = $('#drawerNav .on'); if (on) on.focus();
+  }
+  function closeMenu() {
+    if ($('#drawer').hidden) return;
+    $('#drawer').hidden = true;
+    document.querySelector('.burger').setAttribute('aria-expanded', 'false');
   }
 
   // ---------- events ----------
@@ -910,20 +979,24 @@
     togglePaid: () => { UI.showPaid = !UI.showPaid; saveUI(); render(); },
     addTx: () => editTx(), addDebt: () => editDebt(), addPayment: () => editPayment(), addAccount: () => editAccount(),
     addTransfer: () => editTransfer(), addCategory: () => editCategory(),
-    theme: (el) => { try { if (el.dataset.v) localStorage.setItem(KEY + ':theme', el.dataset.v); else localStorage.removeItem(KEY + ':theme'); } catch (e) { /* ignore */ } applyTheme(); },
+    toggleTheme: () => setTheme(isDark() ? 'light' : 'dark'),
+    setTheme: (el) => setTheme(el.dataset.v),
+    openMenu, closeMenu,
   };
 
   document.addEventListener('click', (e) => {
     if (e.target.closest('dialog')) return;
     const el = e.target.closest('[data-tab],[data-act],[data-edit]');
     if (!el || el.disabled) return;
-    if (el.dataset.tab) { UI.tab = el.dataset.tab; saveUI(); render(); window.scrollTo(0, 0); return; }
+    if (el.dataset.tab) { closeMenu(); UI.tab = el.dataset.tab; saveUI(); render(); window.scrollTo(0, 0); return; }
+    if (el.dataset.edit) closeMenu();
     if (el.dataset.edit) { EDIT[el.dataset.edit](el.dataset.uid); return; }
     const fn = ACTIONS[el.dataset.act];
     if (fn) fn(el);
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && e.target.matches && e.target.matches('tr[data-edit]')) EDIT[e.target.dataset.edit](e.target.dataset.uid);
+    if (e.key === 'Escape') closeMenu();
+    if (e.key === 'Enter' && e.target.matches && e.target.matches('tr[data-edit],.tx-item[data-edit]')) EDIT[e.target.dataset.edit](e.target.dataset.uid);
   });
   document.addEventListener('change', (e) => {
     if (e.target.id === 'monthPick' && e.target.value) { UI.month = e.target.value; saveUI(); render(); }
@@ -932,7 +1005,16 @@
   $('#fileJson').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) restoreJsonFile(f); });
   dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
 
-  applyTheme();
+  // swipe dots under the accounts row
+  document.addEventListener('scroll', (e) => {
+    if (!e.target || e.target.id !== 'acctStrip') return;
+    const el = e.target, dots = document.querySelectorAll('#stripDots span');
+    if (!dots.length) return;
+    const max = el.scrollWidth - el.clientWidth;
+    const i = max > 0 ? Math.round((el.scrollLeft / max) * (dots.length - 1)) : 0;
+    dots.forEach((d, k) => d.classList.toggle('on', k === i));
+  }, true);
+
   load();
   render();
 

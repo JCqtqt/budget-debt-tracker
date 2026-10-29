@@ -1,0 +1,7 @@
+# Keep personal data out of the repo
+*.xlsx
+*.xlsm
+*.xls
+budget-backup-*.json
+budget-transactions-*.csv
+~$*
