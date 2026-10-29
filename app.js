@@ -80,6 +80,16 @@
     for (const k of ['accounts', 'transactions', 'debts', 'payments', 'transfers', 'categories']) {
       for (const x of out[k]) if (!x.uid) x.uid = out.nextId++;
     }
+    // older entries: turn "₱5,000/month" in the notes into a monthly installment plan
+    for (const d of out.debts) {
+      if (d.plan) continue;
+      const m = String(d.notes || '').match(/₱?\s*([\d,]+(?:\.\d+)?)\s*\/\s*mo(?:nth)?/i);
+      const mo = m ? num(m[1]) : 0;
+      const n = mo ? num(d.amount) / mo : 0;
+      if (mo > 0 && n >= 1 && Math.abs(n - Math.round(n)) < 0.001 && d.date) {
+        Object.assign(d, { plan: 'Monthly installment', monthly: mo, months: Math.round(n), dueDay: +d.date.slice(8) });
+      } else d.plan = 'One-time';
+    }
     return out;
   }
   const newUid = () => S.nextId++;
@@ -90,16 +100,43 @@
   const debtById = (id) => S.debts.find((d) => d.id === +id);
   const payType = (p) => { const d = debtById(p.debtId); return d ? d.type : ''; };
 
+  // ----- monthly installments -----
+  const INSTALLMENT = 'Monthly installment';
+  const isInst = (d) => d.plan === INSTALLMENT && num(d.monthly) > 0 && +d.months > 0;
+  const ordinal = (n) => { const v = n % 100; return n + (['th', 'st', 'nd', 'rd'][(v - 20) % 10] || ['th', 'st', 'nd', 'rd'][v] || 'th'); };
+  // due date of installment number k (0 = first). The first one is in the start month,
+  // or the month after if the due day comes before the start day.
+  function installmentDue(d, k) {
+    const [y, m, sd] = (d.date || todayStr()).split('-').map(Number);
+    const day = +d.dueDay || sd;
+    const off = day >= sd ? 0 : 1;
+    const first = new Date(y, m - 1 + off + k, 1);
+    const last = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+    return ymd(new Date(first.getFullYear(), first.getMonth(), Math.min(day, last)));
+  }
+
   function debtCalc(d) {
     const pays = S.payments.filter((p) => +p.debtId === d.id);
     const paid = sum(pays);
     const balance = num(d.amount) - paid;
     let status = 'Unpaid';
+    if (isInst(d)) {
+      const n = +d.months, mo = num(d.monthly), today = todayStr();
+      let expected = 0;
+      while (expected < n && installmentDue(d, expected) <= today) expected++;
+      const monthsPaid = Math.min(n, Math.floor((paid + 0.005) / mo));
+      const next = balance > 0.004 && monthsPaid < n ? installmentDue(d, monthsPaid) : '';
+      if (balance <= 0.004) status = 'Paid';
+      else if (paid < expected * mo - 0.005) status = 'Overdue';
+      else if (paid > 0) status = 'Partial';
+      return { paid, balance, status, count: pays.length, inst: true, monthsPaid, months: n, monthly: mo, next, expected };
+    }
     if (balance <= 0) status = 'Paid';
     else if (d.due && d.due < todayStr()) status = 'Overdue';
     else if (paid > 0) status = 'Partial';
-    return { paid, balance, status, count: pays.length };
+    return { paid, balance, status, count: pays.length, inst: false, next: d.due || '' };
   }
+  const planText = (d, c) => (c.inst ? `${money(c.monthly)}/mo · ${c.monthsPaid} of ${c.months} months · due every ${ordinal(+d.dueDay || +d.date.slice(8))}` : '');
 
   function catActual(c, ym) {
     let a = sum(S.transactions.filter((t) => t.category === c.name && inMonth(t.date, ym)));
@@ -252,7 +289,8 @@
             return `<div class="ditem">
               <div class="top-line"><span>${esc(d.person)}${what ? ` <span class="muted">· ${esc(what)}</span>` : ''}</span><b>${money(c.balance)}</b></div>
               ${bar(pct(c.paid, num(d.amount)))}
-              <div class="meta"><span>${money(c.paid)} of ${money(d.amount)} paid</span><span>${d.type === OWED ? 'Owed to me · ' : ''}${statusPill(c.status)}</span></div>
+              <div class="meta"><span>${c.inst ? `${money(c.monthly)}/mo · ${c.monthsPaid} of ${c.months} months` : `${money(c.paid)} of ${money(d.amount)} paid`}</span><span>${d.type === OWED ? 'Owed to me · ' : ''}${statusPill(c.status)}</span></div>
+              ${c.next ? `<div class="meta"><span>Next due <b class="due">${esc(fmtDate(c.next))}</b></span><span>${c.inst ? `${money(c.paid)} of ${money(d.amount)} paid` : ''}</span></div>` : ''}
             </div>`;
           }).join('')}</div>` : '<p class="empty">No open debts.</p>'}
         </div>
@@ -384,12 +422,12 @@
       const c = debtCalc(d);
       return `<tr ${rowAttrs('debt', d.uid)}>
         <td class="muted">#${d.id}</td>
-        <td><b>${esc(d.person)}</b><div class="desc">${esc(d.description || '')}</div></td>
+        <td><b>${esc(d.person)}</b><div class="desc">${esc(d.description || '')}</div>${c.inst ? `<div class="desc">${esc(planText(d, c))}</div>` : ''}</td>
         <td class="hide-sm">${typePill(d.type)}</td>
         <td class="num hide-sm">${money(d.amount)}</td>
         <td class="num hide-sm">${money(c.paid)}${bar(pct(c.paid, num(d.amount)), 'good')}</td>
         <td class="num"><b>${money(c.balance)}</b></td>
-        <td class="hide-sm">${esc(fmtDate(d.due))}</td>
+        <td class="hide-sm">${esc(fmtDate(c.next))}${c.inst && c.next ? '<div class="desc">next payment</div>' : ''}</td>
         <td>${statusPill(c.status)}</td></tr>`;
     }).join('');
     return `
@@ -497,19 +535,28 @@
       input = `<input id="${id}" name="${f.key}" type="${f.type || 'text'}" value="${esc(val)}"${f.list ? ` list="${id}_l"` : ''} autocomplete="off"${req}>`
         + (f.list ? `<datalist id="${id}_l">${f.list().map((o) => `<option value="${esc(o)}">`).join('')}</datalist>` : '');
     }
-    return `<div class="field${f.full ? ' full' : ''}"><label for="${id}">${esc(f.label)}${f.required ? '' : ' <span class="muted">(optional)</span>'}</label>${input}${f.hint ? `<div class="hint">${f.hint}</div>` : ''}</div>`;
+    return `<div class="field${f.full ? ' full' : ''}" data-field="${f.key}"><label for="${id}">${esc(f.label)}${f.required ? '' : ' <span class="muted">(optional)</span>'}</label>${input}${f.hint ? `<div class="hint">${f.hint}</div>` : ''}</div>`;
   }
 
-  function openForm({ title, note = '', fields, values = {}, onSave, onDelete, deleteLabel = 'Delete', saveLabel = 'Save' }) {
+  function openForm({ title, note = '', fields, values = {}, onSave, onDelete, deleteLabel = 'Delete', saveLabel = 'Save', onChange }) {
     form.innerHTML = `<h2>${esc(title)}</h2>${note ? `<p class="muted small" style="margin:0">${note}</p>` : ''}
       <div class="fields">${fields.map((f) => fieldHTML(f, values)).join('')}</div>
       <p class="err" id="dlgErr"></p>
       <div class="actions">${onDelete ? `<button type="button" class="btn danger" data-dlg="del">${esc(deleteLabel)}</button>` : ''}<span class="sp"></span>
         <button type="button" class="btn" data-dlg="cancel">Cancel</button>${onSave ? `<button type="submit" class="btn primary">${esc(saveLabel)}</button>` : ''}</div>`;
+    const shown = (f) => !f.showIf || (form.elements[f.showIf.key] && form.elements[f.showIf.key].value === f.showIf.value);
+    const sync = (e) => {
+      for (const f of fields) if (f.showIf) form.querySelector(`[data-field="${f.key}"]`).hidden = !shown(f);
+      if (onChange) onChange(form, e);
+    };
+    form.onchange = sync;
+    form.oninput = (e) => { if (onChange) onChange(form, e); };
+    sync();
     form.onsubmit = (e) => {
       e.preventDefault();
       const vals = {};
       for (const f of fields) {
+        if (!shown(f)) { vals[f.key] = f.type === 'money' ? 0 : ''; continue; }
         const el = form.elements[f.key];
         let v = el ? el.value.trim() : '';
         if (f.required && !v) return showErr(`${f.label} is required.`);
@@ -585,20 +632,41 @@
   function editDebt(uid) {
     const d = uid ? find(S.debts, uid) : null;
     const pc = d ? debtCalc(d).count : 0;
+    const instOnly = { key: 'plan', value: INSTALLMENT };
+    const oneOnly = { key: 'plan', value: 'One-time' };
     openForm({
       title: d ? `Edit debt #${d.id}` : 'Add debt',
       fields: [
         { key: 'person', label: 'Person / lender', required: true, list: personList },
         { key: 'type', label: 'Type', type: 'select', options: [OWE, OWED], default: OWE, required: true },
-        { key: 'description', label: 'Description', full: true },
-        { key: 'amount', label: 'Total amount (₱)', type: 'money', required: true },
-        { key: 'date', label: 'Date borrowed', type: 'date', default: todayStr() },
-        { key: 'due', label: 'Due date', type: 'date', hint: 'Shows Overdue after this date if not fully paid.' },
-        { key: 'notes', label: 'Notes' },
+        { key: 'plan', label: 'Payment', type: 'select', options: ['One-time', INSTALLMENT], default: 'One-time', required: true, full: true },
+        { key: 'description', label: 'Description', full: true, hint: 'e.g. Yamaha XMAX, iPhone 17, lunch money' },
+        { key: 'amount', label: 'Total amount (₱)', type: 'money', required: true, showIf: oneOnly },
+        { key: 'due', label: 'Due date', type: 'date', showIf: oneOnly, hint: 'Shows Overdue after this date if not fully paid.' },
+        { key: 'monthly', label: 'Monthly amount (₱)', type: 'money', required: true, showIf: instOnly },
+        { key: 'months', label: 'How many months', type: 'number', required: true, showIf: instOnly },
+        { key: 'dueDay', label: 'Due every (day of month)', type: 'number', required: true, showIf: instOnly, hint: 'e.g. 10 = every 10th' },
+        { key: 'date', label: 'Start date', type: 'date', default: todayStr(), hint: 'For installments: the month of the first payment.' },
+        { key: 'notes', label: 'Notes', full: true },
       ],
       values: d || {},
+      onChange: (f) => {
+        const hint = f.querySelector('[data-field="months"] .hint') || (() => { const h = document.createElement('div'); h.className = 'hint'; f.querySelector('[data-field="months"]').appendChild(h); return h; })();
+        const mo = num(f.elements.monthly.value), n = parseInt(f.elements.months.value, 10);
+        hint.textContent = mo > 0 && n > 0 ? `Total: ${money(mo * n)}` : '';
+      },
       onSave: (v) => {
-        if (v.amount <= 0) return 'Amount must be more than 0.';
+        if (v.plan === INSTALLMENT) {
+          const n = parseInt(v.months, 10), day = parseInt(v.dueDay, 10);
+          if (!(v.monthly > 0)) return 'Monthly amount must be more than 0.';
+          if (!(n >= 1 && n <= 600)) return 'How many months must be a whole number from 1 to 600.';
+          if (!(day >= 1 && day <= 31)) return 'Due day must be from 1 to 31.';
+          if (!v.date) return 'Start date is required for installments.';
+          Object.assign(v, { months: n, dueDay: day, amount: Math.round(v.monthly * n * 100) / 100, due: '' });
+        } else {
+          if (!(v.amount > 0)) return 'Amount must be more than 0.';
+          Object.assign(v, { monthly: 0, months: 0, dueDay: 0 });
+        }
         if (d) Object.assign(d, v);
         else { const id = S.debts.reduce((m, x) => Math.max(m, x.id), 0) + 1; S.debts.push({ uid: newUid(), id, ...v }); }
         toast(d ? 'Saved' : 'Debt added');
@@ -622,6 +690,11 @@
         { key: 'notes', label: 'Notes' },
       ],
       values: p || {},
+      onChange: (f, e) => {
+        if (!e || e.type !== 'change' || e.target.name !== 'debtId') return;
+        const d = debtById(f.elements.debtId.value);
+        if (d && isInst(d) && !f.elements.amount.value) f.elements.amount.value = num(d.monthly).toFixed(2);
+      },
       onSave: (v) => {
         if (v.amount <= 0) return 'Amount must be more than 0.';
         v.debtId = +v.debtId;
