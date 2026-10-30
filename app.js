@@ -47,6 +47,7 @@
       debts: [],
       payments: [],
       transfers: [],
+      bills: [],
       settings: { debtCategory: 'Debt Payments' },
     };
   }
@@ -71,14 +72,14 @@
 
   function normalize(d) {
     const out = Object.assign(blank(), d || {});
-    for (const k of ['categories', 'accounts', 'transactions', 'debts', 'payments', 'transfers']) if (!Array.isArray(out[k])) out[k] = [];
+    for (const k of ['categories', 'accounts', 'transactions', 'debts', 'payments', 'transfers', 'bills']) if (!Array.isArray(out[k])) out[k] = [];
     out.settings = Object.assign({ debtCategory: 'Debt Payments' }, out.settings || {});
     let max = 0;
-    for (const k of ['accounts', 'transactions', 'debts', 'payments', 'transfers', 'categories']) {
+    for (const k of ['accounts', 'transactions', 'debts', 'payments', 'transfers', 'categories', 'bills']) {
       for (const x of out[k]) { if (x.uid) max = Math.max(max, x.uid); }
     }
     out.nextId = Math.max(out.nextId || 1, max + 1);
-    for (const k of ['accounts', 'transactions', 'debts', 'payments', 'transfers', 'categories']) {
+    for (const k of ['accounts', 'transactions', 'debts', 'payments', 'transfers', 'categories', 'bills']) {
       for (const x of out[k]) if (!x.uid) x.uid = out.nextId++;
     }
     // older entries: turn "₱5,000/month" in the notes into a monthly installment plan
@@ -238,7 +239,13 @@
     const today = new Date().toLocaleDateString('en-PH', { weekday: 'long', month: 'long', day: 'numeric' });
     // the soonest upcoming payment you owe
     let next = null;
-    for (const d of S.debts) {
+    {
+      const ymNow = todayStr().slice(0, 7);
+      const pool = upcoming(ymNow).concat(upcoming(shiftMonth(ymNow, 1))).filter((x) => !x.paid);
+      const x = pool.find((p) => p.left < 0) || pool.find((p) => p.left >= 0);
+      if (x) next = { date: x.due, label: x.name, amt: x.amount, varies: x.varies, overdue: x.left < 0 };
+    }
+    for (const d of (next ? [] : S.debts)) {
       if (d.type === OWED) continue;
       const c = debtCalc(d);
       if (c.balance > 0 && c.next && (!next || c.next < next.date)) {
@@ -246,7 +253,7 @@
         next = { date: c.next, label: what || d.person, amt: c.inst ? Math.min(c.monthly, c.balance) : c.balance, overdue: c.status === 'Overdue' };
       }
     }
-    const nextTxt = next ? `${next.overdue ? '<b class="bad">Overdue</b>' : 'Next payment'}: ${esc(next.label)} · ${UI.hideMoney ? '₱ •••' : money(next.amt)} on ${esc(fmtDate(next.date).replace(/, \d{4}$/, ''))}` : '';
+    const nextTxt = next ? `${next.overdue ? '<b class="bad">Overdue</b>' : 'Next payment'}: ${esc(next.label)} · ${next.varies ? 'amount varies' : UI.hideMoney ? '₱ •••' : money(next.amt)} on ${esc(fmtDate(next.date).replace(/, \d{4}$/, ''))}` : '';
     return `<section class="greet">
       <div class="greet-text">
         <h1>${part}${first ? ', ' + esc(first) : ''}<i>.</i></h1>
@@ -352,6 +359,199 @@
       </section>` : ''}`;
   }
 
+  // ----- bills & upcoming payments -----
+  const REMIND_DAYS = 3;
+  const MON = (ym) => new Date(+ym.slice(0, 4), +ym.slice(5, 7) - 1, 1).toLocaleDateString('en-PH', { month: 'short' });
+  const daysBetween = (a, b) => Math.round((new Date(b + 'T00:00:00') - new Date(a + 'T00:00:00')) / 86400000);
+  function billDue(b, ym) {
+    if (!b.date) return '';
+    if (b.repeat === 'Once') return b.date.slice(0, 7) === ym ? b.date : '';
+    if (ym < b.date.slice(0, 7)) return '';
+    const [y, m] = ym.split('-').map(Number);
+    if (b.repeat === 'Yearly' && +b.date.slice(5, 7) !== m) return '';
+    const last = new Date(y, m, 0).getDate();
+    return `${ym}-${pad(Math.min(+b.date.slice(8, 10), last))}`;
+  }
+  const billPaidTx = (b, ym) => { const id = b.paid && b.paid[ym]; return id ? find(S.transactions, id) : null; };
+  // every bill and installment due in a month, with its status
+  function upcoming(ym) {
+    const today = todayStr(), out = [];
+    for (const b of S.bills) {
+      const due = billDue(b, ym);
+      if (!due) continue;
+      const tx = billPaidTx(b, ym);
+      out.push({ kind: 'bill', id: b.uid, b, due, name: b.name, amount: tx ? num(tx.amount) : num(b.amount), varies: !!b.varies && !tx,
+        sub: tx ? `Paid ${fmtDate(tx.date).replace(/, \d{4}$/, '')} · ${tx.account || ''}` : `Bill${b.account ? ' · from ' + b.account : ''}${b.varies ? ' · amount varies' : ''}`,
+        paid: !!tx, remind: b.remind !== false });
+    }
+    for (const d of S.debts) {
+      if (d.type === OWED) continue;
+      const c = debtCalc(d);
+      const what = (d.description || '').replace(/\s*\(.*\)\s*$/, '').replace(/\s+installment$/i, '') || d.person;
+      if (c.inst) {
+        for (let k = 0; k < c.months; k++) {
+          const due = installmentDue(d, k);
+          if (due.slice(0, 7) > ym) break;
+          if (due.slice(0, 7) !== ym) continue;
+          out.push({ kind: 'debt', id: d.uid, d, due, name: what, amount: c.monthly, sub: `Installment ${k + 1} of ${c.months} · ${d.person}`, paid: k < c.monthsPaid, remind: true });
+        }
+      } else if (d.due && d.due.slice(0, 7) === ym && c.balance > 0) {
+        out.push({ kind: 'debt', id: d.uid, d, due: d.due, name: what, amount: c.balance, sub: `Debt · ${d.person}`, paid: false, remind: true });
+      }
+    }
+    for (const it of out) {
+      const left = daysBetween(today, it.due);
+      it.left = left;
+      it.state = it.paid ? 'paid' : left < 0 ? 'late' : left <= REMIND_DAYS && it.remind ? 'soon' : 'later';
+      it.when = it.paid ? 'Paid' : left < 0 ? `${-left} day${left === -1 ? '' : 's'} late` : left === 0 ? 'Today' : left === 1 ? 'Tomorrow' : `In ${left} days`;
+    }
+    return out.sort((a, b) => a.due.localeCompare(b.due) || a.name.localeCompare(b.name));
+  }
+  function billsCard(ym) {
+    const list = upcoming(ym);
+    const total = list.reduce((a, x) => a + (x.varies ? 0 : x.amount), 0);
+    const paidN = list.filter((x) => x.paid).length;
+    const paidAmt = list.filter((x) => x.paid).reduce((a, x) => a + x.amount, 0);
+    return `<section class="card bills">
+      <div class="sec-head" style="margin-bottom:6px"><h2>Upcoming bills</h2><button class="link" data-act="addBill">+ Add bill</button></div>
+      ${list.length ? `<div class="bills-sum"><span>Due this month <b>${money(total)}</b></span><span>Paid <b>${paidN} of ${list.length}</b></span></div>
+      ${bar(pct(paidAmt, total))}
+      <div class="bill-list">${list.map((x, i) => `<div class="bill ${x.state}" style="--i:${i}" data-act="billTap" data-kind="${x.kind}" data-uid="${x.id}" data-due="${x.due}" tabindex="0" role="button">
+          <span class="bill-date"><b>${+x.due.slice(8)}</b><span>${esc(MON(x.due.slice(0, 7)))}</span></span>
+          <span class="bill-main"><b>${esc(x.name)}</b><span>${esc(x.sub)}</span></span>
+          <span class="bill-right"><b>${x.varies ? 'Varies' : money(x.amount)}</b><span class="chip ${x.state}">${esc(x.when)}</span></span>
+        </div>`).join('')}</div>`
+      : `<p class="muted small" style="margin:6px 0 4px">Add rent, electricity, internet and other regular bills. Your installments show up here on their own.</p>`}
+    </section>`;
+  }
+  function editBill(uid) {
+    const b = uid ? find(S.bills, uid) : null;
+    const expenseCats = () => S.categories.filter((c) => c.type === 'Expense' && c.name !== S.settings.debtCategory).map((c) => c.name);
+    openForm({
+      title: b ? `Edit ${b.name}` : 'Add bill',
+      fields: [
+        { key: 'name', label: 'Bill name', required: true, full: true, hint: 'e.g. Rent, Electricity, Internet' },
+        { key: 'amount', label: 'Amount (₱)', type: 'money', hint: 'Leave empty if it changes every month.' },
+        { key: 'date', label: 'Next due date', type: 'date', required: true, default: todayStr() },
+        { key: 'varies', label: 'Amount varies', type: 'check', full: true },
+        { key: 'repeat', label: 'Repeats', type: 'select', options: ['Monthly', 'Yearly', 'Once'], default: 'Monthly', required: true },
+        { key: 'category', label: 'Budget category', type: 'select', required: true, placeholder: 'Choose…', options: expenseCats },
+        { key: 'account', label: 'Pay from', type: 'select', placeholder: 'Choose…', options: accountOpts, full: true },
+        { key: 'remind', label: `Remind me ${REMIND_DAYS} days before`, type: 'check', default: true, full: true },
+      ],
+      values: b || {},
+      onChange: (f, e) => {
+        if (e && e.target && e.target.name === 'name' && !f.elements.category.value) {
+          const n = f.elements.name.value.toLowerCase();
+          const hit = expenseCats().find((c) => c.toLowerCase().split(/[^a-z]+/).some((w) => w.length > 3 && n.includes(w)));
+          if (hit) f.elements.category.value = hit;
+        }
+      },
+      onSave: (v) => {
+        if (!v.varies && !(v.amount > 0)) return 'Enter the amount, or tick "Amount varies".';
+        if (b) Object.assign(b, v); else S.bills.push({ uid: newUid(), paid: {}, ...v });
+        toast(b ? 'Bill saved' : 'Bill added');
+      },
+      onDelete: b ? () => { removeFrom('bills', uid); toast('Bill deleted'); } : null,
+    });
+  }
+  function payBill(b, ym) {
+    const due = billDue(b, ym);
+    openForm({
+      title: `Pay ${b.name}`,
+      note: `Logs an expense in <b>${esc(b.category || 'your budget')}</b> and takes it from the account.`,
+      fields: [
+        { key: 'amount', label: 'Amount (₱)', type: 'money', required: true, default: num(b.amount) ? num(b.amount).toFixed(2) : '' },
+        { key: 'date', label: 'Date paid', type: 'date', required: true, default: todayStr() },
+        { key: 'account', label: 'Paid from', type: 'select', required: true, placeholder: 'Choose…', options: accountOpts, default: b.account || '', full: true },
+      ],
+      saveLabel: 'Mark paid',
+      onSave: (v) => {
+        if (!(v.amount > 0)) return 'Amount must be more than 0.';
+        const t = { uid: newUid(), date: v.date, description: b.name, category: b.category, amount: v.amount, account: v.account, notes: `Bill due ${fmtDate(due)}` };
+        S.transactions.push(t);
+        b.paid = b.paid || {}; b.paid[ym] = t.uid;
+        toast(`${b.name} marked paid`);
+      },
+    });
+  }
+  function billTap(el) {
+    const ym = el.dataset.due.slice(0, 7);
+    if (el.dataset.kind === 'debt') {
+      const d = find(S.debts, el.dataset.uid);
+      if (!d) return;
+      const c = debtCalc(d);
+      if (c.balance <= 0) return toast('This debt is fully paid.');
+      return editPayment(null, { debtId: d.id, amount: (c.inst ? Math.min(c.monthly, c.balance) : c.balance).toFixed(2), account: '' });
+    }
+    const b = find(S.bills, el.dataset.uid);
+    if (!b) return;
+    const tx = billPaidTx(b, ym);
+    if (tx) {
+      choose(`${b.name} is paid`, `Paid ${money(tx.amount)} on ${esc(fmtDate(tx.date))} from ${esc(tx.account || '')}.`, [
+        { label: 'Undo paid', primary: true, fn: () => { removeFrom('transactions', tx.uid); delete b.paid[ym]; commit(); toast('Marked unpaid'); } },
+        { label: 'Edit bill', fn: () => editBill(b.uid) },
+        { label: 'Cancel', fn: () => {} },
+      ]);
+    } else {
+      choose(b.name, `Due ${esc(fmtDate(billDue(b, ym)))}${num(b.amount) ? ' · ' + money(b.amount) : ''}`, [
+        { label: 'Mark paid', primary: true, fn: () => payBill(b, ym) },
+        { label: 'Edit bill', fn: () => editBill(b.uid) },
+        { label: 'Cancel', fn: () => {} },
+      ]);
+    }
+  }
+
+  // ----- notifications -----
+  function notifications() {
+    const today = todayStr(), ym = today.slice(0, 7), prev = shiftMonth(ym, -1), next = shiftMonth(ym, 1);
+    const items = [];
+    for (const m of [prev, ym, next]) {
+      for (const x of upcoming(m)) {
+        if (x.paid) continue;
+        if (x.left < 0 || (x.remind && x.left <= REMIND_DAYS) || (x.kind === 'debt' && x.left <= 7)) {
+          items.push({ ...x, nid: `${x.kind}:${x.id}:${x.due}`,
+            title: x.left < 0 ? `${x.name} is ${-x.left} day${x.left === -1 ? '' : 's'} late` : x.left === 0 ? `${x.name} is due today` : x.left === 1 ? `${x.name} is due tomorrow` : x.kind === 'debt' ? `${x.name} payment on ${fmtDate(x.due).replace(/, \d{4}$/, '')}` : `${x.name} is due in ${x.left} days`,
+            text: `${x.varies ? 'Amount varies' : money(x.amount)} · ${fmtDate(x.due).replace(/, \d{4}$/, '')}${x.kind === 'debt' ? ' · ' + x.sub : x.b.account ? ' · from ' + x.b.account : ''}` });
+        }
+      }
+    }
+    return items.sort((a, b) => a.due.localeCompare(b.due));
+  }
+  let notesOpen = false;
+  function renderBell() {
+    const btn = $('#bellBtn'), panel = $('#notePanel');
+    if (!btn) return;
+    const items = notifications();
+    const seen = new Set(UI.seenNotes || []);
+    const fresh = items.filter((x) => !seen.has(x.nid)).length;
+    btn.querySelector('.badge').textContent = fresh > 9 ? '9+' : fresh || '';
+    btn.querySelector('.badge').hidden = !fresh;
+    btn.setAttribute('aria-label', fresh ? `Notifications, ${fresh} new` : 'Notifications');
+    btn.setAttribute('aria-expanded', notesOpen ? 'true' : 'false');
+    panel.hidden = !notesOpen;
+    if (!notesOpen) return;
+    panel.innerHTML = `<div class="np-head"><h2>Notifications</h2>${fresh ? '<button type="button" class="link" data-act="readAll">Mark all read</button>' : ''}</div>
+      <div class="np-list">${items.length ? items.map((x) => `<div class="np-item ${seen.has(x.nid) ? '' : 'new'} ${x.state}">
+        <span class="np-ico k-${x.kind}">${x.kind === 'bill' ? ICON_CAL : ICON_RECEIPT}</span>
+        <span class="np-body"><b>${esc(x.title)}</b><span>${esc(x.text)}</span>
+          <span class="np-actions"><button type="button" class="btn sm primary" data-act="billTap" data-kind="${x.kind}" data-uid="${x.id}" data-due="${x.due}">${x.kind === 'bill' ? 'Mark paid' : 'Record payment'}</button></span>
+        </span>
+        ${seen.has(x.nid) ? '' : '<span class="np-dot"></span>'}
+      </div>`).join('') : '<p class="empty">You\'re all caught up.</p>'}</div>`;
+  }
+  const ICON_CAL = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/></svg>';
+  const ICON_RECEIPT = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/></svg>';
+
+  // ----- phone bottom tab bar -----
+  const TAB_ICONS = {
+    summary: '<path d="M3 10.5L12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/>',
+    budget: '<path d="M21 12A9 9 0 1 1 12 3v9z"/><path d="M15 3.5A9 9 0 0 1 20.5 9H15z"/>',
+    accounts: '<path d="M3 7a2 2 0 0 1 2-2h14v4"/><path d="M3 7v11a2 2 0 0 0 2 2h16V9H5a2 2 0 0 1-2-2z"/><circle cx="16.5" cy="14.5" r="1.2"/>',
+    debts: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>',
+    payments: '<rect x="2.5" y="5" width="19" height="14" rx="2"/><path d="M2.5 10h19M6 15h4"/>',
+  };
+
   function viewBudget() {
     const ym = UI.month;
     const m = monthTotals(ym);
@@ -398,6 +598,7 @@
         </div>
         <button class="btn primary" data-act="addTx">+ Income / Expense</button>
       </section>
+      ${billsCard(ym)}
       <section class="grid">
         ${stat('Income', money(m.ai), `of ${money(m.bi)} expected`, 'good')}
         ${stat('Expenses', money(m.ae), `of ${money(m.be)} budget`)}
@@ -592,10 +793,21 @@
       </section>
       <section>
         <div class="sec-head"><h2>Appearance</h2></div>
-        <div class="card btn-row">
-          <button class="btn sm" data-act="setTheme" data-v="light">Light</button>
-          <button class="btn sm" data-act="setTheme" data-v="dark">Dark</button>
+        <div class="card appear">
+          <div class="small muted">Theme</div>
+          <div class="seg"><button type="button" data-act="setTheme" data-v="light">Light</button><button type="button" data-act="setTheme" data-v="dark">Dark</button></div>
+          <div class="small muted">Text size</div>
+          <div class="seg seg3 textsize" role="radiogroup" aria-label="Text size">
+            ${[['small', 'Small', 13], ['normal', 'Normal', 16], ['large', 'Large', 20]].map(([v, l, a]) => `<button type="button" role="radio" aria-checked="${textSize() === v}" class="${textSize() === v ? 'on' : ''}" data-act="setText" data-v="${v}"><span style="font-size:${a}px">A</span>${l}</button>`).join('')}
+          </div>
         </div>
+      </section>
+      <section>
+        <div class="sec-head"><h2>Bills &amp; reminders</h2><button class="btn" data-act="addBill">+ Bill</button></div>
+        <div class="card pad0 table-wrap"><table>
+          <thead><tr><th>Bill</th><th>Repeats</th><th class="num">Amount</th></tr></thead>
+          <tbody>${S.bills.length ? S.bills.map((b) => `<tr ${rowAttrs('bill', b.uid)}><td>${esc(b.name)}<div class="desc">${esc(b.category || '')}${b.account ? ' · ' + esc(b.account) : ''}</div></td><td>${esc(b.repeat || 'Monthly')}${b.date && b.repeat !== 'Once' ? `<div class="desc">every ${ordinal(+b.date.slice(8))}</div>` : ''}</td><td class="num">${b.varies ? 'Varies' : money(b.amount)}</td></tr>`).join('') : emptyRow(3, 'No bills yet.')}</tbody>
+        </table></div>
       </section>`;
   }
 
@@ -678,7 +890,7 @@
     document.body.classList.toggle('gated', !!gate);
     maybeHideSplash();
     if (gate) {
-      closeMenu();
+      closeMenu(); notesOpen = false;
       $('#view').innerHTML = gate === 'loading'
         ? '<div class="si-loading"><img src="assets/sawada-logo.png?v=2" alt="Loading" width="72" height="72"></div>'
         : viewSignIn();
@@ -689,6 +901,8 @@
     $('#tabs').innerHTML = TABS.map(([k, l]) => `<button class="tab${UI.tab === k ? ' on' : ''}" data-tab="${k}" ${UI.tab === k ? 'aria-current="page"' : ''}>${l}</button>`).join('');
     $('#view').innerHTML = VIEWS[UI.tab]();
     enterAnimation(UI.tab + (hasData() ? '' : ':empty'));
+    $('#bottomNav').innerHTML = TABS.filter(([k]) => TAB_ICONS[k]).map(([k, l]) => `<button type="button" class="${UI.tab === k ? 'on' : ''}" data-tab="${k}" ${UI.tab === k ? 'aria-current="page"' : ''}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${TAB_ICONS[k]}</svg><span>${l}</span></button>`).join('');
+    renderBell();
     $('#drawerNav').innerHTML = TABS.map(([k, l]) => `<button type="button" class="${UI.tab === k ? 'on' : ''}" data-tab="${k}" ${UI.tab === k ? 'aria-current="page"' : ''}>${l}</button>`).join('');
     $('#pageTitle').textContent = (TABS.find(([k]) => k === UI.tab) || [, ''])[1];
     renderAuth();
@@ -705,6 +919,9 @@
     const id = 'f_' + f.key;
     const req = f.required ? ' required' : '';
     let input;
+    if (f.type === 'check') {
+      return `<div class="field${f.full ? ' full' : ''}" data-field="${f.key}"><label class="check"><input type="checkbox" id="${id}" name="${f.key}"${val === true || (val === '' && f.default) ? ' checked' : ''}> <span>${esc(f.label)}</span></label>${f.hint ? `<div class="hint">${f.hint}</div>` : ''}</div>`;
+    }
     if (f.type === 'select') {
       const opts = (typeof f.options === 'function' ? f.options() : f.options).map((o) => (typeof o === 'object' ? o : { value: o, label: o }));
       input = `<select id="${id}" name="${f.key}"${req}>${f.placeholder ? `<option value="">${esc(f.placeholder)}</option>` : ''}${opts.map((o) => `<option value="${esc(o.value)}"${String(o.value) === String(val) ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select>`;
@@ -737,6 +954,7 @@
       for (const f of fields) {
         if (!shown(f)) { vals[f.key] = f.type === 'money' ? 0 : ''; continue; }
         const el = form.elements[f.key];
+        if (f.type === 'check') { vals[f.key] = !!(el && el.checked); continue; }
         let v = el ? el.value.trim() : '';
         if (f.required && !v) return showErr(`${f.label} is required.`);
         if (f.type === 'money') {
@@ -868,7 +1086,7 @@
     });
   }
 
-  function editPayment(uid) {
+  function editPayment(uid, preset) {
     const p = uid ? find(S.payments, uid) : null;
     if (!S.debts.length) { toast('Add a debt first.'); return; }
     openForm({
@@ -881,7 +1099,7 @@
         { key: 'account', label: 'Account', type: 'select', required: !!S.accounts.length, placeholder: 'Choose…', options: accountOpts, hint: 'Paid from (I owe) or received into (owed to me).' },
         { key: 'notes', label: 'Notes' },
       ],
-      values: p || {},
+      values: p || preset || {},
       onChange: (f, e) => {
         if (!e || e.type !== 'change' || e.target.name !== 'debtId') return;
         const d = debtById(f.elements.debtId.value);
@@ -982,7 +1200,7 @@
     });
   }
 
-  const EDIT = { tx: editTx, debt: editDebt, payment: editPayment, account: editAccount, transfer: editTransfer, category: editCategory };
+  const EDIT = { bill: editBill, tx: editTx, debt: editDebt, payment: editPayment, account: editAccount, transfer: editTransfer, category: editCategory };
 
   // ---------- Excel import (reads the .xlsx directly with JSZip) ----------
   async function readXlsx(buf) {
@@ -1207,6 +1425,15 @@
 
   // ---------- theme ----------
   const isDark = () => document.documentElement.getAttribute('data-theme') === 'dark';
+  const TEXT_ZOOM = { small: 0.92, normal: 1, large: 1.12 };
+  function textSize() { try { return localStorage.getItem(KEY + ':text') || 'normal'; } catch (e) { return 'normal'; } }
+  function setTextSize(v) {
+    if (!TEXT_ZOOM[v]) return;
+    try { localStorage.setItem(KEY + ':text', v); } catch (e) { /* ignore */ }
+    document.documentElement.style.zoom = TEXT_ZOOM[v];
+    document.documentElement.setAttribute('data-text', v);
+    render();
+  }
   function setTheme(th) {
     document.documentElement.setAttribute('data-theme', th);
     try { localStorage.setItem(KEY + ':theme', th); } catch (e) { /* ignore */ }
@@ -1249,6 +1476,11 @@
     setTheme: (el) => setTheme(el.dataset.v),
     openMenu, closeMenu,
     cloudSignIn: () => { closeMenu(); if (window.cloud) window.cloud.signIn(); },
+    addBill: () => editBill(),
+    billTap: (el) => { notesOpen = false; billTap(el); renderBell(); },
+    toggleNotes: () => { notesOpen = !notesOpen; renderBell(); },
+    readAll: () => { UI.seenNotes = [...new Set([...(UI.seenNotes || []), ...notifications().map((x) => x.nid)])].slice(-300); saveUI(); renderBell(); },
+    setText: (el) => setTextSize(el.dataset.v),
     useLocal: () => { UI.localOnly = true; saveUI(); render(); },
     cloudSignOut: () => { acctOpen = false; closeMenu(); if (window.cloud) window.cloud.signOut(); },
     toggleAcctMenu: () => { acctOpen = !acctOpen; renderAuth(); },
@@ -1257,6 +1489,7 @@
   document.addEventListener('click', (e) => {
     if (e.target.closest('dialog')) return;
     if (acctOpen && !e.target.closest('.acct-menu')) { acctOpen = false; renderAuth(); }
+    if (notesOpen && !e.target.closest('.bell-wrap')) { notesOpen = false; renderBell(); }
     const el = e.target.closest('[data-tab],[data-act],[data-edit]');
     if (!el || el.disabled) return;
     if (el.dataset.tab) { closeMenu(); UI.tab = el.dataset.tab; saveUI(); render(); window.scrollTo(0, 0); return; }
@@ -1266,8 +1499,9 @@
     if (fn) fn(el);
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { closeMenu(); if (acctOpen) { acctOpen = false; renderAuth(); } }
+    if (e.key === 'Escape') { closeMenu(); if (acctOpen) { acctOpen = false; renderAuth(); } if (notesOpen) { notesOpen = false; renderBell(); } }
     if (e.key === 'Enter' && e.target.matches && e.target.matches('tr[data-edit],.tx-item[data-edit]')) EDIT[e.target.dataset.edit](e.target.dataset.uid);
+    if (e.key === 'Enter' && e.target.matches && e.target.matches('.bill[data-act]')) billTap(e.target);
   });
   document.addEventListener('change', (e) => {
     if (e.target.id === 'monthPick' && e.target.value) { UI.month = e.target.value; saveUI(); render(); }
@@ -1287,6 +1521,7 @@
   }, true);
 
   load();
+  { const t = textSize(); if (TEXT_ZOOM[t]) { document.documentElement.style.zoom = TEXT_ZOOM[t]; document.documentElement.setAttribute('data-text', t); } }
   render();
 
   // exposed for testing in the browser console
