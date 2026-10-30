@@ -384,3 +384,9 @@ dialog[open] { animation: pop .22s ease-out; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-delay: 0s !important; transition-duration: .01ms !important; }
 }
+
+/* greeting + add button */
+.greet { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.greet-text { min-width: 0; }
+.add-btn { flex: none; white-space: nowrap; font-weight: 700; }
+.add-btn:active { transform: scale(.97); }

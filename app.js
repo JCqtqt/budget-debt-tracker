@@ -248,8 +248,11 @@
     }
     const nextTxt = next ? `${next.overdue ? '<b class="bad">Overdue</b>' : 'Next payment'}: ${esc(next.label)} · ${UI.hideMoney ? '₱ •••' : money(next.amt)} on ${esc(fmtDate(next.date).replace(/, \d{4}$/, ''))}` : '';
     return `<section class="greet">
-      <h1>${part}${first ? ', ' + esc(first) : ''}<i>.</i></h1>
-      <p>${esc(today)}${nextTxt ? ' · ' + nextTxt : ''}</p>
+      <div class="greet-text">
+        <h1>${part}${first ? ', ' + esc(first) : ''}<i>.</i></h1>
+        <p>${esc(today)}${nextTxt ? ' · ' + nextTxt : ''}</p>
+      </div>
+      <button type="button" class="btn primary add-btn" data-act="addTx">+ Income / Expense</button>
     </section>`;
   }
 
