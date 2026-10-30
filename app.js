@@ -610,7 +610,7 @@
   function viewSignIn() {
     return `<div class="signin">
       <section class="si-hero">
-        <div class="si-brand"><img src="assets/sawada-logo.png" alt="SAWADA logo" width="48" height="48"><span><b>SAWADA<i>.</i></b> Budget Tracker</span></div>
+        <div class="si-brand"><img src="assets/sawada-logo.png?v=2" alt="SAWADA logo" width="48" height="48"><span><b>SAWADA<i>.</i></b> Budget Tracker</span></div>
         <div class="si-copy">
           <h1>Know where every peso goes<i>.</i></h1>
           <p>Your accounts, budget and debts in one place. Track installments, see what's due next, and sync between your phone and computer.</p>
@@ -623,7 +623,7 @@
       </section>
       <section class="si-panel">
         <div class="si-card">
-          <img class="si-logo" src="assets/sawada-logo.png" alt="" width="56" height="56">
+          <img class="si-logo" src="assets/sawada-logo.png?v=2" alt="" width="56" height="56">
           <div class="si-kicker">SAWADA<i>.</i> Budget Tracker</div>
           <h2>Welcome back</h2>
           <p class="muted">Sign in to load your tracker on this device.</p>
@@ -677,7 +677,7 @@
     if (gate) {
       closeMenu();
       $('#view').innerHTML = gate === 'loading'
-        ? '<div class="si-loading"><img src="assets/sawada-logo.png" alt="Loading" width="72" height="72"></div>'
+        ? '<div class="si-loading"><img src="assets/sawada-logo.png?v=2" alt="Loading" width="72" height="72"></div>'
         : viewSignIn();
       if (gate === 'signin') enterAnimation('signin');
       return;
