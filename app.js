@@ -593,10 +593,10 @@
       <section class="sec-head">
         <div class="monthbar">
           <button class="btn sm" data-act="prevMonth" aria-label="Previous month">‹</button>
-          <input type="month" id="monthPick" value="${esc(ym)}" aria-label="Month">
+          <label class="month-label"><span>${esc(new Date(+ym.slice(0, 4), +ym.slice(5, 7) - 1, 1).toLocaleDateString('en-PH', +ym.slice(0, 4) === new Date().getFullYear() ? { month: 'short' } : { month: 'short', year: 'numeric' }))}</span><input type="month" id="monthPick" value="${esc(ym)}" aria-label="Choose month"></label>
           <button class="btn sm" data-act="nextMonth" aria-label="Next month">›</button>
         </div>
-        <button class="btn primary" data-act="addTx">+ Income / Expense</button>
+        <button class="btn primary add-btn" data-act="addTx">+ Income / Expense</button>
       </section>
       ${billsCard(ym)}
       <section class="grid">
@@ -901,7 +901,9 @@
     $('#tabs').innerHTML = TABS.map(([k, l]) => `<button class="tab${UI.tab === k ? ' on' : ''}" data-tab="${k}" ${UI.tab === k ? 'aria-current="page"' : ''}>${l}</button>`).join('');
     $('#view').innerHTML = VIEWS[UI.tab]();
     enterAnimation(UI.tab + (hasData() ? '' : ':empty'));
-    $('#bottomNav').innerHTML = TABS.filter(([k]) => TAB_ICONS[k]).map(([k, l]) => `<button type="button" class="${UI.tab === k ? 'on' : ''}" data-tab="${k}" ${UI.tab === k ? 'aria-current="page"' : ''}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${TAB_ICONS[k]}</svg><span>${l}</span></button>`).join('');
+    const navBtn = ([k, l]) => `<button type="button" class="${UI.tab === k ? 'on' : ''}" data-tab="${k}" ${UI.tab === k ? 'aria-current="page"' : ''}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${TAB_ICONS[k]}</svg><span>${l}</span></button>`;
+    const navTabs = TABS.filter(([k]) => TAB_ICONS[k]);
+    $('#bottomNav').innerHTML = navTabs.map(navBtn).join('');
     renderBell();
     $('#drawerNav').innerHTML = TABS.map(([k, l]) => `<button type="button" class="${UI.tab === k ? 'on' : ''}" data-tab="${k}" ${UI.tab === k ? 'aria-current="page"' : ''}>${l}</button>`).join('');
     $('#pageTitle').textContent = (TABS.find(([k]) => k === UI.tab) || [, ''])[1];
