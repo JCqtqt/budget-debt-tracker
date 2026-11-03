@@ -1,6 +1,6 @@
 // Cloud sync with Firebase: Google sign-in + one private Firestore document per user.
 // The app keeps working offline from the browser copy; this file mirrors it to the cloud.
-import * as cfg from './firebase-config.js?v=20';
+import * as cfg from './firebase-config.js?v=22';
 const { firebaseConfig } = cfg;
 
 // newer SDK first (needed for the receipt scanner); the old one is a safety net for sign-in + sync
@@ -75,13 +75,15 @@ async function start() {
   // ---------- Scan receipt: Gemini through Firebase AI Logic ----------
   const recaptchaKey = cfg.recaptchaKey || '';
   const models = (cfg.aiModels && cfg.aiModels.length) ? cfg.aiModels : ['gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'];
-  let appCheckP = null, aiP = null, modelIx = 0;
+  let appCheckP = null, aiP = null, modelIx = 0, acMod = null, acInst = null;
   if (recaptchaKey && SDK === SDKS[0]) {
     cloud.scanReady = true;
     // start App Check early so reCAPTCHA has a score ready by the time you scan
     appCheckP = import(SDK + 'firebase-app-check.js').then((ac) => {
       if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) self.FIREBASE_APPCHECK_DEBUG_TOKEN = true;
-      return ac.initializeAppCheck(app, { provider: new ac.ReCaptchaEnterpriseProvider(recaptchaKey), isTokenAutoRefreshEnabled: true });
+      acMod = ac;
+      acInst = ac.initializeAppCheck(app, { provider: new ac.ReCaptchaEnterpriseProvider(recaptchaKey), isTokenAutoRefreshEnabled: true });
+      return acInst;
     }).catch((e) => { console.warn('App Check could not start', e); });
     rerender();
   }
@@ -100,6 +102,7 @@ async function start() {
     else if (/app.?check|attestation|recaptcha/i.test(t)) msg = 'App Check blocked the scan. Check the reCAPTCHA key and that this site\'s domain is on it.';
     else if (/\b429\b|RESOURCE_EXHAUSTED|quota|rate.?limit/i.test(t)) msg = 'Gemini\'s free limit was reached (per minute or per day). Wait a minute and try again, or add it manually.';
     else if (/\b40[13]\b|PERMISSION_DENIED|unauthenticated|API key/i.test(t)) msg = 'Google refused the request (permission). The setup may not be finished.';
+    else if (/\b(500|502|503|504)\b|high demand|overloaded|UNAVAILABLE/i.test(t)) msg = 'Gemini is busy right now (Google\'s side). Wait a minute and try again, or add it manually.';
     else if (/Failed to fetch|network|offline/i.test(t)) msg = 'Could not reach Gemini. Check your internet and try again.';
     else msg = 'Gemini could not read the receipt.';
     return msg + why;
@@ -108,6 +111,17 @@ async function start() {
   cloud.readReceipt = async ({ data, mimeType }, categories) => {
     if (!recaptchaKey) throw new Error('The scanner is not set up yet (add the reCAPTCHA key in firebase-config.js).');
     const { m, ai } = await getAi().catch((e) => { aiP = null; throw new Error(friendly(e)); });
+    // check App Check first, so a setup problem gets a clear message instead of a generic 401
+    if (acMod && acInst) {
+      try { await acMod.getToken(acInst, false); } catch (e) {
+        console.error('App Check', e);
+        const t = String((e && (e.message || e.code)) || e);
+        let hint = 'App Check could not get a token for this site.';
+        if (/recaptcha/i.test(t)) hint = 'reCAPTCHA did not accept this site. Check that the key\'s domain list has jcqtqt.github.io and that it is a "Web" key in project-1-7b491.';
+        if (/\b(400|403|404)\b|exchange|not.?registered|fetch-status-error/i.test(t)) hint = 'Firebase App Check did not accept the reCAPTCHA token. In Firebase → Security → App Check → Apps, register your web app with reCAPTCHA Enterprise and this exact key, then wait a few minutes.';
+        throw new Error(hint + '<br><br><span class="muted small">Details: ' + t.replace(/[<>&]/g, ' ').slice(0, 300) + '</span>');
+      }
+    }
     const year = new Date().getFullYear();
     const prompt = `You read shop receipts for a Philippine budget app. Look at the image and reply with JSON only, no other text:
 {"isReceipt": true or false, "store": "shop name", "date": "YYYY-MM-DD or empty", "total": number, "category": "one of the list", "items": [{"name": "short item name", "amount": number}], "notes": "anything unclear, or empty"}
@@ -117,7 +131,6 @@ Rules: "total" is the final amount paid (grand total, after discounts, VAT inclu
       try {
         const model = m.getGenerativeModel(ai, { model: models[i], generationConfig: { responseMimeType: 'application/json' } });
         const res = await model.generateContent([prompt, { inlineData: { data, mimeType } }]);
-        modelIx = i;
         const txt = res.response.text().replace(/^\s*```(?:json)?|```\s*$/g, '').trim();
         return JSON.parse(txt);
       } catch (e) {
@@ -125,7 +138,7 @@ Rules: "total" is the final amount paid (grand total, after discounts, VAT inclu
         const t = String((e && e.message) || e);
         // model not offered on this plan / retired: try the next one
         // model not offered on the free plan / retired / no free quota: try the next one
-        if (/\b(404|429)\b|not.?found|not supported|unsupported model|is not available|RESOURCE_EXHAUSTED|quota/i.test(t) && i < models.length - 1) { console.warn(models[i] + ' failed, trying ' + models[i + 1], e); continue; }
+        if (/\b(404|429|500|502|503|504)\b|not.?found|not supported|unsupported model|is not available|RESOURCE_EXHAUSTED|quota|high demand|overloaded|UNAVAILABLE|try again later/i.test(t) && i < models.length - 1) { console.warn(models[i] + ' failed, trying ' + models[i + 1], e); continue; }
         console.error(e);
         throw new Error(e instanceof SyntaxError ? 'Gemini replied in an unexpected way. Try a clearer photo.' : friendly(e));
       }
