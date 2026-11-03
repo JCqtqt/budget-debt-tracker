@@ -1,6 +1,6 @@
 // Cloud sync with Firebase: Google sign-in + one private Firestore document per user.
 // The app keeps working offline from the browser copy; this file mirrors it to the cloud.
-import * as cfg from './firebase-config.js?v=22';
+import * as cfg from './firebase-config.js?v=23';
 const { firebaseConfig } = cfg;
 
 // newer SDK first (needed for the receipt scanner); the old one is a safety net for sign-in + sync
@@ -103,7 +103,7 @@ async function start() {
     else if (/\b429\b|RESOURCE_EXHAUSTED|quota|rate.?limit/i.test(t)) msg = 'Gemini\'s free limit was reached (per minute or per day). Wait a minute and try again, or add it manually.';
     else if (/\b40[13]\b|PERMISSION_DENIED|unauthenticated|API key/i.test(t)) msg = 'Google refused the request (permission). The setup may not be finished.';
     else if (/\b(500|502|503|504)\b|high demand|overloaded|UNAVAILABLE/i.test(t)) msg = 'Gemini is busy right now (Google\'s side). Wait a minute and try again, or add it manually.';
-    else if (/Failed to fetch|network|offline/i.test(t)) msg = 'Could not reach Gemini. Check your internet and try again.';
+    else if (/Load failed|Failed to fetch|NetworkError|network|offline/i.test(t)) msg = 'The connection to Gemini dropped. Check your signal or Wi-Fi and try again.';
     else msg = 'Gemini could not read the receipt.';
     return msg + why;
   }
@@ -126,7 +126,8 @@ async function start() {
     const prompt = `You read shop receipts for a Philippine budget app. Look at the image and reply with JSON only, no other text:
 {"isReceipt": true or false, "store": "shop name", "date": "YYYY-MM-DD or empty", "total": number, "category": "one of the list", "items": [{"name": "short item name", "amount": number}], "notes": "anything unclear, or empty"}
 Rules: "total" is the final amount paid (grand total, after discounts, VAT included). Numbers have no currency signs or commas. If the year is missing use ${year}. Use at most 15 items; skip VAT, subtotal, change and tender lines. "category" must be exactly one of: ${JSON.stringify(categories)}. If the image is not a receipt or bill, set isReceipt to false.`;
-    let lastErr;
+    let lastErr, retried = false;
+    const NET = /Load failed|Failed to fetch|NetworkError|network|ECONNRESET|timed? ?out|aborted/i;
     for (let i = modelIx; i < models.length; i++) {
       try {
         const model = m.getGenerativeModel(ai, { model: models[i], generationConfig: { responseMimeType: 'application/json' } });
@@ -136,6 +137,8 @@ Rules: "total" is the final amount paid (grand total, after discounts, VAT inclu
       } catch (e) {
         lastErr = e;
         const t = String((e && e.message) || e);
+        if (NET.test(t) && !retried) { retried = true; await new Promise((r) => setTimeout(r, 1500)); i--; continue; }
+        if (NET.test(t) && i < models.length - 1) { console.warn(models[i] + ' connection dropped, trying ' + models[i + 1], e); continue; }
         // model not offered on this plan / retired: try the next one
         // model not offered on the free plan / retired / no free quota: try the next one
         if (/\b(404|429|500|502|503|504)\b|not.?found|not supported|unsupported model|is not available|RESOURCE_EXHAUSTED|quota|high demand|overloaded|UNAVAILABLE|try again later/i.test(t) && i < models.length - 1) { console.warn(models[i] + ' failed, trying ' + models[i + 1], e); continue; }

@@ -1622,11 +1622,11 @@
     }
     try {
       const bmp = await createImageBitmap(file);
-      const k = Math.min(1, 1800 / Math.max(bmp.width, bmp.height));
+      const k = Math.min(1, 1400 / Math.max(bmp.width, bmp.height));
       const c = document.createElement('canvas');
       c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
       c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
-      const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.85));
+      const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.8));
       return { data: await toBase64(blob), mimeType: 'image/jpeg', url: URL.createObjectURL(blob) };
     } catch (e) {
       if (file.size > 15e6) throw new Error('That photo is too big. Try a screenshot instead.');
