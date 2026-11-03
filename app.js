@@ -31,7 +31,7 @@
   const pct = (a, b) => (b > 0 ? Math.max(0, Math.min(100, (a / b) * 100)) : 0);
 
   const DEFAULT_CATEGORIES = [
-    ['Salary', 'Income'], ['Side Income', 'Income'], ['Other Income', 'Income'],
+    ['Salary', 'Income'], ['Side Income', 'Income'], ['Interest', 'Income'], ['Other Income', 'Income'],
     ['Food & Groceries', 'Expense'], ['Rent / Housing', 'Expense'], ['Electricity', 'Expense'], ['Water', 'Expense'],
     ['Internet & Load', 'Expense'], ['Transportation & Gas', 'Expense'], ['Debt Payments', 'Expense'], ['Savings', 'Expense'],
     ['Shopping', 'Expense'], ['Health', 'Expense'], ['Entertainment', 'Expense'], ['Family / Gifts', 'Expense'], ['Others', 'Expense'],
@@ -91,6 +91,9 @@
       if (mo > 0 && n >= 1 && Math.abs(n - Math.round(n)) < 0.001 && d.date) {
         Object.assign(d, { plan: 'Monthly installment', monthly: mo, months: Math.round(n), dueDay: +d.date.slice(8) });
       } else d.plan = 'One-time';
+    }
+    if (out.accounts.some((a) => num(a.rate) > 0) && !out.categories.some((c) => c.name === INTEREST_CAT)) {
+      out.categories.push({ uid: out.nextId++, name: INTEREST_CAT, type: 'Income', budget: 0 });
     }
     return out;
   }
@@ -153,15 +156,56 @@
     return { diff, status: diff < 0 ? 'Over budget' : actual >= b * 0.9 ? 'Near limit' : 'OK' };
   }
 
-  function accountCalc(a) {
-    const since = (x) => !a.asOf || (x.date || '') >= a.asOf;
+  // until = optional last date to count (used to know the balance at the end of a past month)
+  function accountCalc(a, until) {
+    const since = (x) => (!a.asOf || (x.date || '') >= a.asOf) && (!until || (x.date || '') <= until);
     const mine = (x) => x.account === a.name && since(x);
     const inc = sum(S.transactions.filter((t) => mine(t) && catType(t.category) === 'Income'))
       + sum(S.payments.filter((p) => mine(p) && payType(p) === OWED));
     const out = sum(S.transactions.filter((t) => mine(t) && catType(t.category) === 'Expense'))
       + sum(S.payments.filter((p) => mine(p) && payType(p) === OWE));
     const tr = sum(S.transfers.filter((t) => t.to === a.name && since(t))) - sum(S.transfers.filter((t) => t.from === a.name && since(t)));
-    return { inc, out, tr, current: num(a.start) + inc - out + tr };
+    // money that moved when a debt was created: lending takes it out, borrowing cash puts it in
+    const lent = sum(S.debts.filter((d) => mine(d) && d.type === OWED));
+    const borrowed = sum(S.debts.filter((d) => mine(d) && d.type !== OWED));
+    return { inc: inc + borrowed, out: out + lent, tr, current: num(a.start) + inc + borrowed - out - lent + tr };
+  }
+
+  // ----- interest on savings / digital bank accounts -----
+  const INTEREST_CAT = 'Interest';
+  const TAX_OPTS = [{ value: '20', label: '20% tax withheld (most PH banks)' }, { value: '0', label: 'No tax / already net' }];
+  const taxOf = (a) => (a.tax === '' || a.tax == null ? 20 : num(a.tax));
+  const rateText = (a) => `${+num(a.rate).toFixed(3)}% p.a.`;
+  // estimated interest for one month, after tax
+  const interestEst = (a, bal, days, dim) => {
+    if (!(num(a.rate) > 0) || !(bal > 0)) return 0;
+    const share = days && dim ? days / dim : 1;
+    return Math.round(bal * (num(a.rate) / 100) / 12 * (1 - taxOf(a) / 100) * share * 100) / 100;
+  };
+  const interestEarned = (a, year) => sum(S.transactions.filter((t) => t.account === a.name && t.category === INTEREST_CAT && (t.date || '').slice(0, 4) === year));
+  const lastDay = (ym) => { const [y, m] = ym.split('-').map(Number); return ymd(new Date(y, m, 0)); };
+
+  // "Add interest automatically": at the end of every month, post the estimate as income
+  function autoInterest() {
+    const nowYm = todayStr().slice(0, 7);
+    let added = 0;
+    for (const a of S.accounts) {
+      if (!a.autoInterest || !(num(a.rate) > 0) || !a.interestStart) continue;
+      const startYm = [a.interestStart.slice(0, 7), (a.asOf || '').slice(0, 7)].sort().pop();
+      for (let ym = startYm, guard = 0; ym < nowYm && guard < 36; ym = shiftMonth(ym, 1), guard++) {
+        if (S.transactions.some((t) => t.account === a.name && t.interestFor === ym)) continue;
+        const end = lastDay(ym);
+        const dim = +end.slice(8);
+        const from = [a.interestStart, a.asOf || ''].sort().pop();
+        const days = from.slice(0, 7) === ym ? dim - +from.slice(8) + 1 : dim;
+        const amt = interestEst(a, accountCalc(a, end).current, days, dim);
+        if (amt < 0.01) continue;
+        if (!S.categories.some((c) => c.name === INTEREST_CAT)) S.categories.push({ uid: newUid(), name: INTEREST_CAT, type: 'Income', budget: 0 });
+        S.transactions.push({ uid: newUid(), date: end, amount: amt, category: INTEREST_CAT, description: `Interest · ${monthLabel(ym)}`, account: a.name, notes: 'Estimated automatically. Edit to match your bank.', interestFor: ym });
+        added++;
+      }
+    }
+    return added;
   }
 
   function totals() {
@@ -213,6 +257,12 @@
       items.push({ date: p.date, uid: p.uid, kind: 'payment', dir: owe ? 'out' : 'in', title: d ? d.person + (what ? ' · ' + what : '') : 'Debt payment',
         sub: [owe ? 'Debt payment' : 'Paid back to me', p.account, fmtDate(p.date)].filter(Boolean).join(' · '), amt: (owe ? '−' : '+') + money(p.amount) });
     }
+    for (const d of S.debts) {
+      if (!d.account) continue;
+      const owed = d.type === OWED;
+      items.push({ date: d.date, uid: d.uid, kind: 'debt', dir: owed ? 'out' : 'in', title: `${owed ? 'Lent to' : 'Borrowed from'} ${d.person}`,
+        sub: [d.description, d.account, fmtDate(d.date)].filter(Boolean).join(' · '), amt: (owed ? '−' : '+') + money(d.amount) });
+    }
     for (const t of S.transfers) {
       items.push({ date: t.date, uid: t.uid, kind: 'transfer', dir: 'move', title: `${t.from} → ${t.to}`, sub: ['Transfer', fmtDate(t.date)].join(' · '), amt: money(t.amount) });
     }
@@ -259,7 +309,7 @@
         <h1>${part}${first ? ', ' + esc(first) : ''}<i>.</i></h1>
         <p>${esc(today)}${nextTxt ? ' · ' + nextTxt : ''}</p>
       </div>
-      <button type="button" class="btn primary add-btn" data-act="addTx">+ Income / Expense</button>
+      <span class="add-pair"><button type="button" class="btn add-btn scan-btn" data-act="scanUpload">${SCAN_ICO} Scan receipt</button><button type="button" class="btn primary add-btn" data-act="addTx">+ Income / Expense</button></span>
     </section>`;
   }
 
@@ -306,7 +356,7 @@
         <div class="acct-strip" id="acctStrip" aria-label="Accounts">
           ${accts.map(({ a, bal }, i) => `<button type="button" class="acct${Math.abs(bal) < 0.005 ? ' zero' : ''}" style="--i:${i}" data-edit="account" data-uid="${a.uid}">
             <span class="head"><span class="name">${esc(a.name)}</span><span class="dot"></span></span>
-            <span><span class="bal${bal < 0 ? ' bad' : ''}">${money(bal)}</span><br><span class="type">${esc(a.type || '')}</span></span>
+            <span><span class="bal${bal < 0 ? ' bad' : ''}">${money(bal)}</span><br><span class="type">${esc(a.type || '')}${num(a.rate) > 0 ? ` · <span class="rate">${rateText(a)}</span>` : ''}</span></span>
           </button>`).join('')}
           <div class="acct total"><span class="head"><span class="name">Total money</span></span><span><span class="bal">${secret(money(t.cash))}</span><br><span class="type">${S.accounts.length} accounts</span></span></div>
         </div>
@@ -596,7 +646,7 @@
           <label class="month-label"><span>${esc(new Date(+ym.slice(0, 4), +ym.slice(5, 7) - 1, 1).toLocaleDateString('en-PH', +ym.slice(0, 4) === new Date().getFullYear() ? { month: 'short' } : { month: 'short', year: 'numeric' }))}</span><input type="month" id="monthPick" value="${esc(ym)}" aria-label="Choose month"></label>
           <button class="btn sm" data-act="nextMonth" aria-label="Next month">›</button>
         </div>
-        <button class="btn primary add-btn" data-act="addTx">+ Income / Expense</button>
+        <span class="add-pair"><button type="button" class="btn add-btn scan-btn" data-act="scanUpload">${SCAN_ICO} Scan receipt</button><button class="btn primary add-btn" data-act="addTx">+ Income / Expense</button></span>
       </section>
       ${billsCard(ym)}
       <section class="grid">
@@ -621,12 +671,52 @@
       </section>`;
   }
 
+  function interestCard() {
+    const list = S.accounts.filter((a) => num(a.rate) > 0);
+    const year = todayStr().slice(0, 4);
+    if (!list.length) {
+      return S.accounts.length ? `<section class="card int-empty"><b>Earning interest?</b> <span class="muted small">Edit a digital bank or savings account and enter its rate (% per year). We'll estimate what it earns each month.</span></section>` : '';
+    }
+    let mo = 0, yr = 0, got = 0;
+    const rows = list.map((a) => {
+      const bal = accountCalc(a).current;
+      const m = interestEst(a, bal);
+      const e = interestEarned(a, year);
+      mo += m; yr += m * 12; got += e;
+      return `<div class="int-row">
+        <span class="int-main"><b>${esc(a.name)}</b><span>${rateText(a)}${a.autoInterest ? ' · <i class="auto">Auto</i>' : ''}</span></span>
+        <span class="int-num"><b class="good">+${secret(money(m))}</b><span>a month</span></span>
+        <span class="int-num hide-sm"><b>${secret(money(e))}</b><span>earned ${year}</span></span>
+        <button type="button" class="btn sm" data-act="recordInterest" data-uid="${a.uid}">Record</button>
+      </div>`;
+    }).join('');
+    return `<section>
+      <div class="sec-head"><h2>Interest</h2></div>
+      <div class="card int-card">
+        <div class="int-stats">
+          <div><div class="label small">Per month (est.)</div><div class="v good">+${secret(money(mo))}</div></div>
+          <div><div class="label small">Per year (est.)</div><div class="v">+${secret(money(yr))}</div></div>
+          <div><div class="label small">Earned in ${year}</div><div class="v">${secret(money(got))}</div></div>
+        </div>
+        <div class="int-list">${rows}</div>
+        <p class="muted small" style="margin:0">Estimates use today's balance, after tax. Tap <b>Record</b> when your bank credits the interest, and type the exact amount from your app.</p>
+      </div>
+    </section>`;
+  }
+
+  function recordInterest(uid) {
+    const a = find(S.accounts, uid);
+    if (!a) return;
+    const ym = todayStr().slice(0, 7);
+    editTx(null, { date: todayStr(), amount: interestEst(a, accountCalc(a).current) || '', category: INTEREST_CAT, description: `Interest · ${monthLabel(ym)}`, account: a.name });
+  }
+
   function viewAccounts() {
     const t = totals();
     const rows = S.accounts.map((a) => {
       const c = accountCalc(a);
       return `<tr ${rowAttrs('account', a.uid)}>
-        <td>${esc(a.name)}<div class="desc">${esc(a.type || '')}${a.notes ? ' · ' + esc(a.notes) : ''}</div></td>
+        <td>${esc(a.name)}<div class="desc">${esc(a.type || '')}${num(a.rate) > 0 ? ' · ' + rateText(a) : ''}${a.notes ? ' · ' + esc(a.notes) : ''}</div></td>
         <td class="num hide-sm">${money(a.start)}<div class="desc">as of ${esc(fmtDate(a.asOf) || '—')}</div></td>
         <td class="num hide-sm good">${c.inc ? '+' + money(c.inc) : ''}</td>
         <td class="num hide-sm">${c.out ? '−' + money(c.out) : ''}</td>
@@ -643,6 +733,7 @@
         <tfoot><tr><td>Total money</td><td class="hide-sm"></td><td class="hide-sm"></td><td class="hide-sm"></td><td class="hide-sm"></td><td class="num">${money(t.cash)}</td></tr></tfoot>
       </table></section>
       <p class="muted small">Balance = starting balance on the "as of" date + income − expenses − debt payments + money paid back to you ± transfers, all from that date on.</p>
+      ${interestCard()}
       <section>
         <div class="sec-head"><h2>Transfers between accounts</h2><button class="btn" data-act="addTransfer" ${S.accounts.length < 2 ? 'disabled' : ''}>+ Transfer</button></div>
         <div class="card pad0 table-wrap"><table>
@@ -936,8 +1027,8 @@
     return `<div class="field${f.full ? ' full' : ''}" data-field="${f.key}"><label for="${id}">${esc(f.label)}${f.required ? '' : ' <span class="muted">(optional)</span>'}</label>${input}${f.hint ? `<div class="hint">${f.hint}</div>` : ''}</div>`;
   }
 
-  function openForm({ title, note = '', fields, values = {}, onSave, onDelete, deleteLabel = 'Delete', saveLabel = 'Save', onChange }) {
-    form.innerHTML = `<h2>${esc(title)}</h2>${note ? `<p class="muted small" style="margin:0">${note}</p>` : ''}
+  function openForm({ title, note = '', head = '', fields, values = {}, onSave, onDelete, deleteLabel = 'Delete', saveLabel = 'Save', onChange }) {
+    form.innerHTML = `<h2>${esc(title)}</h2>${head}${note ? `<p class="muted small" style="margin:0">${note}</p>` : ''}
       <div class="fields">${fields.map((f) => fieldHTML(f, values)).join('')}</div>
       <p class="err" id="dlgErr"></p>
       <div class="actions">${onDelete ? `<button type="button" class="btn danger" data-dlg="del">${esc(deleteLabel)}</button>` : ''}<span class="sp"></span>
@@ -1018,7 +1109,7 @@
   const find = (arr, uid) => arr.find((x) => x.uid === +uid);
   const removeFrom = (key, uid) => { S[key] = S[key].filter((x) => x.uid !== +uid); };
 
-  function editTx(uid) {
+  function editTx(uid, preset) {
     const t = uid ? find(S.transactions, uid) : null;
     if (!S.accounts.length) { toast('Add an account first (Accounts tab).'); UI.tab = 'accounts'; render(); return; }
     openForm({
@@ -1031,10 +1122,10 @@
         { key: 'account', label: 'Account', type: 'select', required: true, placeholder: 'Choose…', options: accountOpts },
         { key: 'notes', label: 'Notes' },
       ],
-      values: t || {},
+      values: t || preset || {},
       onSave: (v) => {
         if (v.amount <= 0) return 'Amount must be more than 0.';
-        if (t) Object.assign(t, v); else S.transactions.push({ uid: newUid(), ...v });
+        if (t) Object.assign(t, v); else S.transactions.push({ uid: newUid(), ...v, ...(preset && preset.interestFor ? { interestFor: preset.interestFor } : {}) });
         toast(t ? 'Saved' : 'Added');
       },
       onDelete: t ? () => { removeFrom('transactions', uid); toast('Deleted'); } : null,
@@ -1059,10 +1150,19 @@
         { key: 'months', label: 'How many months', type: 'number', required: true, showIf: instOnly },
         { key: 'dueDay', label: 'Due every (day of month)', type: 'number', required: true, showIf: instOnly, hint: 'e.g. 10 = every 10th' },
         { key: 'date', label: 'Start date', type: 'date', default: todayStr(), hint: 'For installments: the month of the first payment.' },
+        { key: 'account', label: 'Account', type: 'select', placeholder: 'None — no money moved', options: accountOpts, full: true, hint: ' ' },
         { key: 'notes', label: 'Notes', full: true },
       ],
       values: d || {},
       onChange: (f) => {
+        const ah = f.querySelector('[data-field="account"] .hint');
+        if (ah) {
+          const owed = f.elements.type.value === OWED, inst = f.elements.plan.value === INSTALLMENT;
+          ah.textContent = owed
+            ? 'The account you lent the money from. It goes down by the amount; their payments add it back.'
+            : inst ? 'Leave empty for things bought on installment (no cash received). Your payments are deducted automatically.'
+              : 'The account the borrowed cash went into. It goes up by the amount; your payments take it back out.';
+        }
         const hint = f.querySelector('[data-field="months"] .hint') || (() => { const h = document.createElement('div'); h.className = 'hint'; f.querySelector('[data-field="months"]').appendChild(h); return h; })();
         const mo = num(f.elements.monthly.value), n = parseInt(f.elements.months.value, 10);
         hint.textContent = mo > 0 && n > 0 ? `Total: ${money(mo * n)}` : '';
@@ -1131,11 +1231,29 @@
         { key: 'type', label: 'Type', type: 'select', options: ACCOUNT_TYPES, default: 'Bank', required: true },
         { key: 'start', label: 'Balance (₱)', type: 'money', required: true, hint: 'What the account has on the date →' },
         { key: 'asOf', label: 'As of', type: 'date', required: true, default: todayStr(), hint: 'Entries from this date on update the balance.' },
+        { key: 'rate', label: 'Interest (% per year)', type: 'money', hint: 'e.g. 4 for a digital bank paying 4% p.a.' },
+        { key: 'tax', label: 'Tax on interest', type: 'select', options: TAX_OPTS, default: '20' },
+        { key: 'autoInterest', label: 'Add the interest automatically at the end of each month', type: 'check', full: true, hint: ' ' },
         { key: 'notes', label: 'Notes', full: true },
       ],
       values: a || {},
+      onChange: (f) => {
+        const r = num(f.elements.rate.value), bal = a ? accountCalc(a).current : num(f.elements.start.value);
+        const tax = num(f.elements.tax.value);
+        const est = interestEst({ rate: r, tax }, bal);
+        const show = r > 0;
+        f.querySelector('[data-field="tax"]').hidden = !show;
+        f.querySelector('[data-field="autoInterest"]').hidden = !show;
+        f.querySelector('[data-field="autoInterest"] .hint').textContent = show
+          ? `About ${money(est)} a month on ${money(bal)}${tax ? ', after tax' : ''}. It's an estimate: your bank's figure can differ a little, and you can edit it.` : '';
+      },
       onSave: (v) => {
         if (S.accounts.some((x) => x !== a && x.name.toLowerCase() === v.name.toLowerCase())) return 'You already have an account with that name.';
+        if (v.rate < 0 || v.rate > 100) return 'Interest must be between 0 and 100%.';
+        if (!(v.rate > 0)) { v.rate = 0; v.autoInterest = false; }
+        if (v.autoInterest && !(a && a.autoInterest && a.interestStart)) v.interestStart = todayStr();
+        if (!v.autoInterest) v.interestStart = '';
+        if (v.rate > 0 && !S.categories.some((c) => c.name === INTEREST_CAT)) S.categories.push({ uid: newUid(), name: INTEREST_CAT, type: 'Income', budget: 0 });
         if (a) {
           renameRefs(['account'], a.name, v.name, ['transactions', 'payments']);
           renameRefs(['from', 'to'], a.name, v.name, ['transfers']);
@@ -1461,6 +1579,139 @@
   }
 
   // ---------- events ----------
+  // ---------- Scan receipt (Gemini via Firebase AI Logic, see cloud.js) ----------
+  const SCAN_ICO = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><path d="M8 9h8M8 12h8M8 15h5"/></svg>';
+  const CAM_ICO = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.5"/></svg>';
+  const IMG_ICO = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/></svg>';
+  const PEN_ICO = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>';
+  const SPARK = '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2l1.8 5.6L19.5 9l-5.7 1.4L12 16l-1.8-5.6L4.5 9l5.7-1.4z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>';
+  let addMenuOpen = false;
+  function renderAddMenu() {
+    let m = $('#addMenu');
+    const fab = $('.fab');
+    if (fab) { fab.classList.toggle('open', addMenuOpen); fab.setAttribute('aria-expanded', addMenuOpen ? 'true' : 'false'); }
+    if (!addMenuOpen) { if (m) m.remove(); return; }
+    if (!m) { m = document.createElement('div'); m.id = 'addMenu'; m.className = 'add-menu'; m.setAttribute('role', 'menu'); document.body.appendChild(m); }
+    const item = (act, ico, title, sub, hot) => `<button type="button" role="menuitem" class="am-item${hot ? ' hot' : ''}" data-act="${act}"><span class="am-ico">${ico}</span><span class="am-txt"><b>${title}</b><span>${sub}</span></span></button>`;
+    m.innerHTML = item('scanCamera', CAM_ICO, 'Scan receipt', 'Take a photo', true)
+      + item('scanUpload', IMG_ICO, 'Upload receipt', 'Photo, screenshot or PDF')
+      + item('addTx', PEN_ICO, 'Add manually', 'Income or expense');
+  }
+  function closeAddMenu() { if (addMenuOpen) { addMenuOpen = false; renderAddMenu(); } }
+
+  function scanBlocked() {
+    const c = window.cloud;
+    if (!S.accounts.length) { toast('Add an account first (Accounts tab).'); return true; }
+    if (!c || !c.enabled) { toast('The scanner needs the cloud connection. Check your internet and reload.', 5000); return true; }
+    if (!c.scanReady) { toast('The scanner isn\'t set up yet. Add your reCAPTCHA key to firebase-config.js (see the setup steps).', 6000); return true; }
+    return false;
+  }
+  function pickReceipt(camera) {
+    closeAddMenu();
+    if (scanBlocked()) return;
+    const inp = $(camera ? '#fileCam' : '#fileImg');
+    inp.value = '';
+    inp.click();
+  }
+
+  // shrink big phone photos before sending (faster, and enough detail to read the text)
+  async function prepImage(file) {
+    if (file.type === 'application/pdf') {
+      if (file.size > 15e6) throw new Error('That PDF is too big (max 15 MB).');
+      return { data: await toBase64(file), mimeType: file.type, url: '' };
+    }
+    try {
+      const bmp = await createImageBitmap(file);
+      const k = Math.min(1, 1800 / Math.max(bmp.width, bmp.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+      c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+      const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.85));
+      return { data: await toBase64(blob), mimeType: 'image/jpeg', url: URL.createObjectURL(blob) };
+    } catch (e) {
+      if (file.size > 15e6) throw new Error('That photo is too big. Try a screenshot instead.');
+      return { data: await toBase64(file), mimeType: file.type || 'image/jpeg', url: URL.createObjectURL(file) };
+    }
+  }
+  const toBase64 = (blob) => new Promise((ok, bad) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1]); r.onerror = bad; r.readAsDataURL(blob); });
+
+  let scanRun = 0;
+  async function scanFile(file) {
+    if (!file) return;
+    const run = ++scanRun;
+    let img;
+    try { img = await prepImage(file); } catch (e) { toast(e.message, 5000); return; }
+    const thumb = img.url ? `<img src="${img.url}" alt="">` : `<span class="pdf">PDF</span>`;
+    form.innerHTML = `<div class="scan-wait">${thumb}<div class="scan-line"></div></div>
+      <h2 style="text-align:center">Reading your receipt…</h2>
+      <p class="muted small" style="margin:0;text-align:center">Gemini is finding the store, date, total and items. This takes a few seconds.</p>
+      <div class="actions"><span class="sp"></span><button type="button" class="btn" data-dlg="cancel">Cancel</button></div>`;
+    form.onsubmit = (e) => e.preventDefault();
+    form.onchange = form.oninput = null;
+    form.onclick = (e) => { if (e.target.closest('[data-dlg=cancel]')) { scanRun++; dlg.close(); } };
+    if (!dlg.open) dlg.showModal();
+    const cats = S.categories.filter((c) => c.type === 'Expense' && c.name !== S.settings.debtCategory).map((c) => c.name);
+    let r;
+    try {
+      r = await window.cloud.readReceipt(img, cats);
+    } catch (e) {
+      if (run !== scanRun) return;
+      dlg.close();
+      choose('Couldn\'t read it', esc(e.message || String(e)), [
+        { label: 'Try another photo', primary: true, fn: () => pickReceipt(false) },
+        { label: 'Add it manually', fn: () => editTx() },
+      ]);
+      return;
+    }
+    if (run !== scanRun) return;
+    showScanResult(r || {}, img, cats);
+  }
+
+  function showScanResult(r, img, cats) {
+    if (r.isReceipt === false) {
+      choose('That doesn\'t look like a receipt', 'Try again with the whole receipt in the photo, flat and in good light.', [
+        { label: 'Try another photo', primary: true, fn: () => pickReceipt(false) },
+        { label: 'Add it manually', fn: () => editTx() },
+      ]);
+      return;
+    }
+    const today = todayStr();
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(r.date || '') && r.date <= today ? r.date : today;
+    const items = (Array.isArray(r.items) ? r.items : []).filter((x) => x && x.name).slice(0, 15);
+    const total = num(r.total) || Math.round(sum(items) * 100) / 100;
+    const cat = cats.includes(r.category) ? r.category : (cats.find((c) => /food|grocer/i.test(c)) || cats[0] || '');
+    const acct = S.accounts.some((a) => a.name === UI.lastScanAcct) ? UI.lastScanAcct : (S.accounts[0] || {}).name;
+    const itemsTxt = items.map((x) => `${x.name} ${money(x.amount)}`).join('; ');
+    const thumb = img.url ? `<img src="${img.url}" alt="Receipt photo">` : '<span class="pdf">PDF</span>';
+    const head = `<div class="scan-head"><span class="scan-thumb">${thumb}</span>
+        <span class="ai-badge">${SPARK} Filled in by AI · please check</span></div>
+      ${items.length ? `<details class="scan-items"${items.length <= 6 ? ' open' : ''}><summary>${items.length} item${items.length > 1 ? 's' : ''} found</summary>
+        <div>${items.map((x) => `<div><span>${esc(x.name)}</span><span>${money(x.amount)}</span></div>`).join('')}
+        <div class="tot"><span>Total</span><span>${money(total)}</span></div></div></details>` : ''}
+      ${r.notes ? `<p class="muted small" style="margin:0">Note from Gemini: ${esc(r.notes)}</p>` : ''}`;
+    openForm({
+      title: r.store ? `${r.store}` : 'Receipt read',
+      head,
+      fields: [
+        { key: 'amount', label: 'Amount (₱)', type: 'money', required: true },
+        { key: 'date', label: 'Date', type: 'date', required: true },
+        { key: 'description', label: 'Store / description', full: true },
+        { key: 'category', label: 'Category', type: 'select', required: true, placeholder: 'Choose…', options: () => catOpts(), full: true },
+        { key: 'account', label: 'Paid from', type: 'select', required: true, placeholder: 'Choose…', options: accountOpts },
+        { key: 'notes', label: 'Notes' },
+      ],
+      values: { amount: total ? total.toFixed(2) : '', date, description: r.store || '', category: cat, account: acct, notes: itemsTxt.length > 300 ? itemsTxt.slice(0, 297) + '…' : itemsTxt },
+      saveLabel: 'Save expense',
+      onSave: (v) => {
+        if (v.amount <= 0) return 'Amount must be more than 0.';
+        S.transactions.push({ uid: newUid(), ...v, scanned: true });
+        UI.lastScanAcct = v.account; saveUI();
+        toast(`Saved ${money(v.amount)} from ${v.account}`);
+      },
+    });
+    if (img.url) dlg.addEventListener('close', () => setTimeout(() => URL.revokeObjectURL(img.url), 1000), { once: true });
+  }
+
   const ACTIONS = {
     importXlsx: () => $('#fileXlsx').click(),
     restoreJson: () => $('#fileJson').click(),
@@ -1472,7 +1723,7 @@
     nextMonth: () => { UI.month = shiftMonth(UI.month, 1); saveUI(); render(); },
     toggleHide: () => { UI.hideMoney = !UI.hideMoney; saveUI(); render(); },
     togglePaid: () => { UI.showPaid = !UI.showPaid; saveUI(); render(); },
-    addTx: () => editTx(), addDebt: () => editDebt(), addPayment: () => editPayment(), addAccount: () => editAccount(),
+    addTx: () => { closeAddMenu(); editTx(); }, addMenu: () => { addMenuOpen = !addMenuOpen; renderAddMenu(); }, scanCamera: () => pickReceipt(true), scanUpload: () => pickReceipt(false), recordInterest: (el) => recordInterest(el.dataset.uid), addDebt: () => editDebt(), addPayment: () => editPayment(), addAccount: () => editAccount(),
     addTransfer: () => editTransfer(), addCategory: () => editCategory(),
     toggleTheme: () => setTheme(isDark() ? 'light' : 'dark'),
     setTheme: (el) => setTheme(el.dataset.v),
@@ -1492,6 +1743,7 @@
     if (e.target.closest('dialog')) return;
     if (acctOpen && !e.target.closest('.acct-menu')) { acctOpen = false; renderAuth(); }
     if (notesOpen && !e.target.closest('.bell-wrap')) { notesOpen = false; renderBell(); }
+    if (addMenuOpen && !e.target.closest('#addMenu,.fab')) closeAddMenu();
     const el = e.target.closest('[data-tab],[data-act],[data-edit]');
     if (!el || el.disabled) return;
     if (el.dataset.tab) { closeMenu(); UI.tab = el.dataset.tab; saveUI(); render(); window.scrollTo(0, 0); return; }
@@ -1501,7 +1753,7 @@
     if (fn) fn(el);
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { closeMenu(); if (acctOpen) { acctOpen = false; renderAuth(); } if (notesOpen) { notesOpen = false; renderBell(); } }
+    if (e.key === 'Escape') { closeMenu(); if (acctOpen) { acctOpen = false; renderAuth(); } if (notesOpen) { notesOpen = false; renderBell(); } closeAddMenu(); }
     if (e.key === 'Enter' && e.target.matches && e.target.matches('tr[data-edit],.tx-item[data-edit]')) EDIT[e.target.dataset.edit](e.target.dataset.uid);
     if (e.key === 'Enter' && e.target.matches && e.target.matches('.bill[data-act]')) billTap(e.target);
   });
@@ -1509,6 +1761,7 @@
     if (e.target.id === 'monthPick' && e.target.value) { UI.month = e.target.value; saveUI(); render(); }
   });
   $('#fileXlsx').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importXlsxFile(f); });
+  for (const id of ['#fileCam', '#fileImg']) $(id).addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) scanFile(f); });
   $('#fileJson').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) restoreJsonFile(f); });
   dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
 
@@ -1523,12 +1776,18 @@
   }, true);
 
   load();
+  // post any end-of-month interest that is due (after the cloud copy is loaded, so devices don't clash)
+  function runAuto() {
+    const n = autoInterest();
+    if (n) { save(); render(); toast(`Added interest for ${n} month${n > 1 ? 's' : ''}`); }
+  }
+  setTimeout(() => { const c = window.cloud; if (!c || !c.enabled || (c.ready && !c.user)) runAuto(); }, 1500);
   { const t = textSize(); if (TEXT_ZOOM[t]) { document.documentElement.style.zoom = TEXT_ZOOM[t]; document.documentElement.setAttribute('data-text', t); } }
   render();
 
   // exposed for testing in the browser console
   window.tracker = {
-    get state() { return S; }, totals, monthTotals, accountCalc, debtCalc, hasData, render, toast, choose,
+    get state() { return S; }, runAuto, totals, monthTotals, accountCalc, debtCalc, hasData, render, toast, choose,
     // used by cloud.js
     replace(data, opts) { S = normalize(data); save(opts); render(); },
     signedIn() { if (UI.localOnly) { UI.localOnly = false; saveUI(); } },

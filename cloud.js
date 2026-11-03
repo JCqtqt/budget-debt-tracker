@@ -1,8 +1,11 @@
 // Cloud sync with Firebase: Google sign-in + one private Firestore document per user.
 // The app keeps working offline from the browser copy; this file mirrors it to the cloud.
-import { firebaseConfig } from './firebase-config.js?v=16';
+import * as cfg from './firebase-config.js?v=19';
+const { firebaseConfig } = cfg;
 
-const SDK = 'https://www.gstatic.com/firebasejs/10.12.2/';
+// newer SDK first (needed for the receipt scanner); the old one is a safety net for sign-in + sync
+const SDKS = ['https://www.gstatic.com/firebasejs/12.19.0/', 'https://www.gstatic.com/firebasejs/10.12.2/'];
+let SDK = SDKS[0];
 const DEVICE_KEY = 'budget-debt-tracker:v1:device';
 
 const cloud = {
@@ -16,7 +19,8 @@ const cloud = {
     if (this.status === 'synced') return `Synced${this.lastSync ? ' · ' + new Date(this.lastSync).toLocaleTimeString('en-PH', { hour: 'numeric', minute: '2-digit' }) : ''}`;
     return 'Connecting…';
   },
-  push() {}, signIn() {}, signOut() {},
+  scanReady: false,
+  push() {}, signIn() {}, signOut() {}, readReceipt: null,
 };
 window.cloud = cloud;
 
@@ -39,14 +43,19 @@ async function start() {
   rerender();
   const giveUp = setTimeout(() => { if (cloud.pending) { cloud.pending = false; rerender(); } }, 8000);
   let appMod, authMod, fsMod;
-  try {
-    [appMod, authMod, fsMod] = await Promise.all([
-      import(SDK + 'firebase-app.js'),
-      import(SDK + 'firebase-auth.js'),
-      import(SDK + 'firebase-firestore.js'),
-    ]);
-  } catch (e) {
-    console.warn('Firebase could not load; cloud sync is off for now.', e);
+  for (const base of SDKS) {
+    try {
+      [appMod, authMod, fsMod] = await Promise.all([
+        import(base + 'firebase-app.js'),
+        import(base + 'firebase-auth.js'),
+        import(base + 'firebase-firestore.js'),
+      ]);
+      SDK = base;
+      break;
+    } catch (e) { console.warn('Firebase could not load from ' + base, e); }
+  }
+  if (!appMod) {
+    console.warn('Firebase could not load; cloud sync is off for now.');
     clearTimeout(giveUp); cloud.pending = false; rerender();
     return;
   }
@@ -62,6 +71,61 @@ async function start() {
 
   cloud.enabled = true;
   rerender();
+
+  // ---------- Scan receipt: Gemini through Firebase AI Logic ----------
+  const recaptchaKey = cfg.recaptchaKey || '';
+  const models = (cfg.aiModels && cfg.aiModels.length) ? cfg.aiModels : ['gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'];
+  let appCheckP = null, aiP = null, modelIx = 0;
+  if (recaptchaKey && SDK === SDKS[0]) {
+    cloud.scanReady = true;
+    // start App Check early so reCAPTCHA has a score ready by the time you scan
+    appCheckP = import(SDK + 'firebase-app-check.js').then((ac) => {
+      if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) self.FIREBASE_APPCHECK_DEBUG_TOKEN = true;
+      return ac.initializeAppCheck(app, { provider: new ac.ReCaptchaEnterpriseProvider(recaptchaKey), isTokenAutoRefreshEnabled: true });
+    }).catch((e) => { console.warn('App Check could not start', e); });
+    rerender();
+  }
+  const getAi = () => (aiP || (aiP = (async () => {
+    await appCheckP;
+    const m = await import(SDK + 'firebase-ai.js');
+    return { m, ai: m.getAI(app, { backend: new m.GoogleAIBackend() }) };
+  })()));
+
+  function friendly(e) {
+    const t = String((e && (e.message || e.code)) || e);
+    if (/429|quota|RESOURCE_EXHAUSTED|rate/i.test(t)) return 'The free scans for today are used up. Try again tomorrow, or add it manually.';
+    if (/app.?check|attestation|recaptcha|401|403|PERMISSION_DENIED|unauthenticated/i.test(t)) return 'The scanner is not allowed yet. Check that AI Logic and App Check are set up for this site (see the setup steps).';
+    if (/api.*not.*(enabled|been used)|SERVICE_DISABLED|firebasevertexai|firebaseml/i.test(t)) return 'AI Logic is not turned on yet in your Firebase project.';
+    if (/fetch|network|offline|Failed to/i.test(t)) return 'Could not reach Gemini. Check your internet and try again.';
+    return 'Could not read the receipt: ' + t.slice(0, 160);
+  }
+
+  cloud.readReceipt = async ({ data, mimeType }, categories) => {
+    if (!recaptchaKey) throw new Error('The scanner is not set up yet (add the reCAPTCHA key in firebase-config.js).');
+    const { m, ai } = await getAi().catch((e) => { aiP = null; throw new Error(friendly(e)); });
+    const year = new Date().getFullYear();
+    const prompt = `You read shop receipts for a Philippine budget app. Look at the image and reply with JSON only, no other text:
+{"isReceipt": true or false, "store": "shop name", "date": "YYYY-MM-DD or empty", "total": number, "category": "one of the list", "items": [{"name": "short item name", "amount": number}], "notes": "anything unclear, or empty"}
+Rules: "total" is the final amount paid (grand total, after discounts, VAT included). Numbers have no currency signs or commas. If the year is missing use ${year}. Use at most 15 items; skip VAT, subtotal, change and tender lines. "category" must be exactly one of: ${JSON.stringify(categories)}. If the image is not a receipt or bill, set isReceipt to false.`;
+    let lastErr;
+    for (let i = modelIx; i < models.length; i++) {
+      try {
+        const model = m.getGenerativeModel(ai, { model: models[i], generationConfig: { responseMimeType: 'application/json' } });
+        const res = await model.generateContent([prompt, { inlineData: { data, mimeType } }]);
+        modelIx = i;
+        const txt = res.response.text().replace(/^\s*```(?:json)?|```\s*$/g, '').trim();
+        return JSON.parse(txt);
+      } catch (e) {
+        lastErr = e;
+        const t = String((e && e.message) || e);
+        // model not offered on this plan / retired: try the next one
+        if (/404|not.?found|not supported|unsupported model|is not available/i.test(t) && i < models.length - 1) continue;
+        console.error(e);
+        throw new Error(e instanceof SyntaxError ? 'Gemini replied in an unexpected way. Try a clearer photo.' : friendly(e));
+      }
+    }
+    throw new Error(friendly(lastErr));
+  };
 
   const setStatus = (s) => { cloud.status = s; if (s === 'synced') cloud.lastSync = Date.now(); rerender(); };
 
@@ -168,6 +232,8 @@ async function start() {
         });
       }
     }
+
+    if (T().runAuto) T().runAuto(); // end-of-month interest, now that the cloud copy is in
 
     // live updates from your other devices
     unsub = onSnapshot(ref, (s) => {
