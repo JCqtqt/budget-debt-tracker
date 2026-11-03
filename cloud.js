@@ -1,6 +1,6 @@
 // Cloud sync with Firebase: Google sign-in + one private Firestore document per user.
 // The app keeps working offline from the browser copy; this file mirrors it to the cloud.
-import * as cfg from './firebase-config.js?v=19';
+import * as cfg from './firebase-config.js?v=20';
 const { firebaseConfig } = cfg;
 
 // newer SDK first (needed for the receipt scanner); the old one is a safety net for sign-in + sync
@@ -91,13 +91,18 @@ async function start() {
     return { m, ai: m.getAI(app, { backend: new m.GoogleAIBackend() }) };
   })()));
 
+  // turn Firebase/Gemini errors into plain words, and keep the real reason at the end for troubleshooting
   function friendly(e) {
     const t = String((e && (e.message || e.code)) || e);
-    if (/429|quota|RESOURCE_EXHAUSTED|rate/i.test(t)) return 'The free scans for today are used up. Try again tomorrow, or add it manually.';
-    if (/app.?check|attestation|recaptcha|401|403|PERMISSION_DENIED|unauthenticated/i.test(t)) return 'The scanner is not allowed yet. Check that AI Logic and App Check are set up for this site (see the setup steps).';
-    if (/api.*not.*(enabled|been used)|SERVICE_DISABLED|firebasevertexai|firebaseml/i.test(t)) return 'AI Logic is not turned on yet in your Firebase project.';
-    if (/fetch|network|offline|Failed to/i.test(t)) return 'Could not reach Gemini. Check your internet and try again.';
-    return 'Could not read the receipt: ' + t.slice(0, 160);
+    const why = '<br><br><span class="muted small">Details: ' + t.replace(/[<>&]/g, ' ').slice(0, 300) + '</span>';
+    let msg;
+    if (/has not been used|SERVICE_DISABLED|is disabled|not.{0,20}enabled/i.test(t)) msg = 'AI Logic is not fully turned on yet in your Firebase project (it can take a few minutes after you enable it).';
+    else if (/app.?check|attestation|recaptcha/i.test(t)) msg = 'App Check blocked the scan. Check the reCAPTCHA key and that this site\'s domain is on it.';
+    else if (/\b429\b|RESOURCE_EXHAUSTED|quota|rate.?limit/i.test(t)) msg = 'Gemini\'s free limit was reached (per minute or per day). Wait a minute and try again, or add it manually.';
+    else if (/\b40[13]\b|PERMISSION_DENIED|unauthenticated|API key/i.test(t)) msg = 'Google refused the request (permission). The setup may not be finished.';
+    else if (/Failed to fetch|network|offline/i.test(t)) msg = 'Could not reach Gemini. Check your internet and try again.';
+    else msg = 'Gemini could not read the receipt.';
+    return msg + why;
   }
 
   cloud.readReceipt = async ({ data, mimeType }, categories) => {
@@ -119,7 +124,8 @@ Rules: "total" is the final amount paid (grand total, after discounts, VAT inclu
         lastErr = e;
         const t = String((e && e.message) || e);
         // model not offered on this plan / retired: try the next one
-        if (/404|not.?found|not supported|unsupported model|is not available/i.test(t) && i < models.length - 1) continue;
+        // model not offered on the free plan / retired / no free quota: try the next one
+        if (/\b(404|429)\b|not.?found|not supported|unsupported model|is not available|RESOURCE_EXHAUSTED|quota/i.test(t) && i < models.length - 1) { console.warn(models[i] + ' failed, trying ' + models[i + 1], e); continue; }
         console.error(e);
         throw new Error(e instanceof SyntaxError ? 'Gemini replied in an unexpected way. Try a clearer photo.' : friendly(e));
       }

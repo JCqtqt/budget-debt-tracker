@@ -1657,7 +1657,7 @@
     } catch (e) {
       if (run !== scanRun) return;
       dlg.close();
-      choose('Couldn\'t read it', esc(e.message || String(e)), [
+      choose('Couldn\'t read it', String(e.message || e), [
         { label: 'Try another photo', primary: true, fn: () => pickReceipt(false) },
         { label: 'Add it manually', fn: () => editTx() },
       ]);
