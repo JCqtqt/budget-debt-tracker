@@ -14,6 +14,6 @@ export const firebaseConfig = {
 // ---- Scan receipt (Firebase AI Logic + Gemini) ----
 // reCAPTCHA Enterprise site key for App Check (Google Cloud console → Security → reCAPTCHA).
 // Paste it between the quotes. Leave empty and the scanner stays off.
-export const recaptchaKey = '';
+export const recaptchaKey = '6LeVzw0uAAAAACKni4FPPjXQ6htNnZxVJcDPaAcs';
 // Gemini models to try, in order (the first one that works on your plan is used).
 export const aiModels = ['gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'];
