@@ -322,6 +322,62 @@
   const EYE = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
   const EYE_OFF = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.9 10.9 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.1M6.6 6.6A17.4 17.4 0 0 0 2 12s3.6 7 10 7a9.9 9.9 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
   const secret = (text) => (UI.hideMoney ? '<span class="masked" aria-label="Hidden">₱ ••••••</span>' : text);
+  // ---------- donut charts on the Summary page ----------
+  // colors: CSS variables --c1..--c5 (validated for colorblind separation, light + dark), --c6 = "Other"
+  let chartSel = { e: null, a: null };
+  function chartData(key) {
+    const ym = todayStr().slice(0, 7);
+    let rows, title, sub, chip, center, empty;
+    if (key === 'e') {
+      rows = S.categories.map((c, i) => ({ n: c.name, v: c.type === 'Expense' ? catActual(c, ym) : 0, i })).filter((r) => r.v > 0.004);
+      title = 'Spending this month'; sub = 'Expenses by category'; chip = monthLabel(ym).replace(/(\w{3})\w*/, '$1'); center = 'Total spent';
+      empty = 'No expenses yet this month.';
+    } else {
+      rows = S.accounts.map((a, i) => ({ n: a.name, v: accountCalc(a).current, i })).filter((r) => r.v > 0.004);
+      const neg = S.accounts.length - rows.length;
+      title = 'Where my money is'; sub = 'Balance by account' + (neg ? ` · ${neg} empty or below zero not shown` : '');
+      chip = `${S.accounts.length} account${S.accounts.length === 1 ? '' : 's'}`; center = 'Total money';
+      empty = 'No money in your accounts yet.';
+    }
+    const sorted = [...rows].sort((a, b) => b.v - a.v);
+    const top = sorted.slice(0, 5), rest = sorted.slice(5);
+    // the color follows the item (its place in your list), not its size this month
+    [...top].sort((a, b) => a.i - b.i).forEach((r, k) => { r.c = k + 1; });
+    const items = top.map((r) => ({ n: r.n, v: r.v, c: r.c }));
+    if (rest.length === 1) items.push({ n: rest[0].n, v: rest[0].v, c: 6 });
+    else if (rest.length) items.push({ n: `Other (${rest.length})`, v: rest.reduce((a, r) => a + r.v, 0), c: 6, other: rest.map((r) => r.n).join(', ') });
+    return { title, sub, chip, center, empty, items, total: items.reduce((a, x) => a + x.v, 0) };
+  }
+  function chartCard(key) {
+    const d = chartData(key);
+    const sel = chartSel[key] != null && chartSel[key] < d.items.length ? chartSel[key] : null;
+    const R = 76, C = 2 * Math.PI * R, gap = d.items.length > 1 ? 2.5 : 0;
+    let acc = 0;
+    const segs = d.items.map((x, i) => {
+      const len = (x.v / d.total) * C;
+      const el = `<circle class="dn-seg${sel === i ? ' on' : ''}${sel != null && sel !== i ? ' dim' : ''}" cx="98" cy="98" r="${R}" style="stroke:var(--c${x.c})" stroke-dasharray="${Math.max(len - gap, 0.6).toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${(-acc).toFixed(2)}" transform="rotate(-90 98 98)" data-act="chartPick" data-k="${key}" data-i="${i}"><title>${esc(x.n)}: ${UI.hideMoney ? 'hidden' : money(x.v)} (${Math.round((x.v / d.total) * 100)}%)</title></circle>`;
+      acc += len;
+      return el;
+    }).join('');
+    const s = sel != null ? d.items[sel] : null;
+    const pct = (v) => (d.total ? Math.round((v / d.total) * 100) : 0) + '%';
+    const legend = d.items.map((x, i) => `<button type="button" class="lg-row${sel === i ? ' on' : ''}${sel != null && sel !== i ? ' dim' : ''}" data-act="chartPick" data-k="${key}" data-i="${i}" aria-pressed="${sel === i}"${x.other ? ` title="${esc(x.other)}"` : ''}>
+        <span class="lg-dot" style="background:var(--c${x.c})"></span><span class="lg-name">${esc(x.n)}</span><span class="lg-amt">${secret(money(x.v))}</span><span class="lg-pct">${pct(x.v)}</span></button>`).join('');
+    return `<section class="card chart-card" data-chart="${key}" aria-label="${esc(d.title)}">
+      <div class="ch-head"><div><h2>${esc(d.title)}</h2><div class="small muted">${esc(d.sub)}</div></div><span class="ch-chip">${esc(d.chip)}</span></div>
+      ${d.items.length ? `<div class="donut"><svg viewBox="0 0 196 196" width="196" height="196" role="img" aria-label="${esc(d.title + ': ' + d.items.map((x) => x.n + ' ' + pct(x.v)).join(', '))}">
+          <circle cx="98" cy="98" r="${R}" class="dn-track"/>${segs}</svg>
+        <div class="dn-center"><span class="dn-l">${esc(s ? s.n : d.center)}</span><b>${secret(money(s ? s.v : d.total))}</b><span class="dn-s">${s ? pct(s.v) + ' of total' : 'Tap a slice'}</span></div></div>
+      <div class="legend" role="list">${legend}</div>` : `<p class="empty">${esc(d.empty)}</p>`}
+    </section>`;
+  }
+  function chartPick(el) {
+    const k = el.dataset.k, i = +el.dataset.i;
+    chartSel[k] = chartSel[k] === i ? null : i;
+    const card = document.querySelector(`[data-chart="${k}"]`);
+    if (card) card.outerHTML = chartCard(k);
+  }
+
   // an amount that counts up when the page opens
   const countUp = (n) => (UI.hideMoney ? secret('') : `<span data-count="${(+n || 0).toFixed(2)}">${money(n).replace(/^-/, '−')}</span>`);
 
@@ -406,6 +462,8 @@
         </div>
         <div class="strip-dots" id="stripDots" aria-hidden="true">${Array.from({ length: dots }, (_, i) => `<span${i === 0 ? ' class="on"' : ''}></span>`).join('')}</div>
       </section>
+
+      <div class="charts">${chartCard('e')}${chartCard('a')}</div>
 
       <section>
         <div class="sec-head"><h2>Recent transactions</h2><button class="link" data-act="goBudget">See all</button></div>
@@ -2045,7 +2103,7 @@
     nextMonth: () => { UI.month = shiftMonth(UI.month, 1); saveUI(); render(); },
     toggleHide: () => { UI.hideMoney = !UI.hideMoney; saveUI(); render(); },
     togglePaid: () => { UI.showPaid = !UI.showPaid; saveUI(); render(); },
-    addTx: () => { closeAddMenu(); editTx(); }, statement: () => editStatement(), openLog: () => { UI.tab = 'history'; UI.logAcct = ''; saveUI(); render(); window.scrollTo(0, 0); }, undoLog: (el) => undoLog(el.dataset.g), addMenu: () => { addMenuOpen = !addMenuOpen; renderAddMenu(); }, scanCamera: () => pickReceipt(true), scanUpload: () => pickReceipt(false), recordInterest: (el) => recordInterest(el.dataset.uid), addDebt: () => editDebt(), addPayment: () => editPayment(), addAccount: () => editAccount(),
+    addTx: () => { closeAddMenu(); editTx(); }, statement: () => editStatement(), chartPick: (el) => chartPick(el), openLog: () => { UI.tab = 'history'; UI.logAcct = ''; saveUI(); render(); window.scrollTo(0, 0); }, undoLog: (el) => undoLog(el.dataset.g), addMenu: () => { addMenuOpen = !addMenuOpen; renderAddMenu(); }, scanCamera: () => pickReceipt(true), scanUpload: () => pickReceipt(false), recordInterest: (el) => recordInterest(el.dataset.uid), addDebt: () => editDebt(), addPayment: () => editPayment(), addAccount: () => editAccount(),
     addTransfer: () => editTransfer(), addCategory: () => editCategory(),
     toggleTheme: () => setTheme(isDark() ? 'light' : 'dark'),
     setTheme: (el) => setTheme(el.dataset.v),
