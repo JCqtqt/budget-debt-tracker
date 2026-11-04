@@ -48,6 +48,7 @@
       payments: [],
       transfers: [],
       bills: [],
+      log: [],
       settings: { debtCategory: 'Debt Payments' },
     };
   }
@@ -62,17 +63,60 @@
       const raw = localStorage.getItem(KEY);
       if (raw) S = normalize(JSON.parse(raw));
     } catch (e) { storageOK = false; }
+    snap = takeSnap();
     try { Object.assign(UI, JSON.parse(localStorage.getItem(KEY + ':ui') || '{}')); } catch (e) { /* ignore */ }
   }
   function save(opts) {
+    if (opts && opts.fromCloud) snap = takeSnap(); else logChanges(opts && opts.label);
     try { localStorage.setItem(KEY, JSON.stringify(S)); storageOK = true; } catch (e) { storageOK = false; }
     if (!(opts && opts.fromCloud) && window.cloud && window.cloud.push) window.cloud.push(S);
   }
+  // ---------- action log: every change is compared with the last saved state ----------
+  const LOG_KEYS = ['accounts', 'transactions', 'debts', 'payments', 'transfers', 'bills', 'categories'];
+  const LOG_MAX = 150, BULK = 25;
+  let snap = null;
+  function takeSnap() {
+    const o = {};
+    for (const k of LOG_KEYS) o[k] = new Map((S[k] || []).map((x) => [x.uid, JSON.stringify(x)]));
+    return o;
+  }
+  function deviceName() {
+    const u = navigator.userAgent || '';
+    if (/iPhone/.test(u)) return 'iPhone';
+    if (/iPad/.test(u)) return 'iPad';
+    if (/Android/.test(u)) return /Mobile/.test(u) ? 'Android phone' : 'Android tablet';
+    if (/Windows/.test(u)) return 'Windows PC';
+    if (/Mac/.test(u)) return 'Mac';
+    return 'Computer';
+  }
+  function logChanges(label) {
+    const now = takeSnap();
+    if (!snap) { snap = now; return; }
+    const items = [];
+    for (const k of LOG_KEYS) {
+      const was = snap[k], is = now[k];
+      for (const [uid, j] of is) {
+        const old = was.get(uid);
+        if (old === undefined) items.push({ a: 'add', k, uid, after: JSON.parse(j) });
+        else if (old !== j) items.push({ a: 'edit', k, uid, before: JSON.parse(old), after: JSON.parse(j) });
+      }
+      for (const [uid, j] of was) if (!is.has(uid)) items.push({ a: 'del', k, uid, before: JSON.parse(j) });
+    }
+    snap = now;
+    if (!items.length) return;
+    const g = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), at: Date.now(), dev: deviceName() };
+    if (label) g.label = label;
+    if (items.length > BULK) { g.bulk = items.length; g.items = []; } else g.items = items;
+    if (!Array.isArray(S.log)) S.log = [];
+    S.log.unshift(g);
+    if (S.log.length > LOG_MAX) S.log.length = LOG_MAX;
+  }
+
   function saveUI() { try { localStorage.setItem(KEY + ':ui', JSON.stringify(UI)); } catch (e) { /* ignore */ } }
 
   function normalize(d) {
     const out = Object.assign(blank(), d || {});
-    for (const k of ['categories', 'accounts', 'transactions', 'debts', 'payments', 'transfers', 'bills']) if (!Array.isArray(out[k])) out[k] = [];
+    for (const k of ['categories', 'accounts', 'transactions', 'debts', 'payments', 'transfers', 'bills', 'log']) if (!Array.isArray(out[k])) out[k] = [];
     out.settings = Object.assign({ debtCategory: 'Debt Payments' }, out.settings || {});
     let max = 0;
     for (const k of ['accounts', 'transactions', 'debts', 'payments', 'transfers', 'categories', 'bills']) {
@@ -726,7 +770,7 @@
     const tr = [...S.transfers].sort((a, b) => (b.date || '').localeCompare(a.date || '')).map((x) => `<tr ${rowAttrs('transfer', x.uid)}>
         <td>${esc(fmtDate(x.date))}</td><td>${esc(x.from)} → ${esc(x.to)}${x.notes ? `<div class="desc">${esc(x.notes)}</div>` : ''}</td><td class="num">${money(x.amount)}</td></tr>`).join('');
     return `
-      <section class="sec-head"><h2>My accounts</h2><button class="btn primary" data-act="addAccount">+ Account</button></section>
+      <section class="sec-head"><h2>My accounts</h2><span class="btn-row" style="margin:0"><button class="btn" data-act="openLog">Action log</button><button class="btn primary" data-act="addAccount">+ Account</button></span></section>
       <section class="card pad0 table-wrap"><table>
         <thead><tr><th>Account</th><th class="num hide-sm">Starting</th><th class="num hide-sm">Money in</th><th class="num hide-sm">Money out</th><th class="num hide-sm">Transfers</th><th class="num">Balance</th></tr></thead>
         <tbody>${rows || emptyRow(6, 'Add your banks, e-wallets and cash.')}</tbody>
@@ -856,11 +900,116 @@
       </div>`;
   }
 
+  // ---------- action log view ----------
+  const KIND = { transactions: 'entry', accounts: 'account', debts: 'debt', payments: 'payment', transfers: 'transfer', bills: 'bill', categories: 'category' };
+  const FIELD = { start: 'Balance', asOf: 'As of', amount: 'Amount', date: 'Date', account: 'Account', category: 'Category', description: 'Description', name: 'Name', rate: 'Interest', tax: 'Tax', autoInterest: 'Auto interest', notes: 'Notes', person: 'Person', type: 'Type', plan: 'Payment plan', monthly: 'Monthly', months: 'Months', dueDay: 'Due day', due: 'Due date', from: 'From', to: 'To', budget: 'Budget', debtId: 'Debt', method: 'Method', repeat: 'Repeat', remind: 'Reminder', varies: 'Amount varies' };
+  const MONEYF = new Set(['start', 'amount', 'monthly', 'budget']);
+  const DATEF = new Set(['asOf', 'date', 'due']);
+  const SKIPF = new Set(['uid', 'id', 'paid', 'interestStart', 'interestFor', 'scanned']);
+  // empty, zero, off and the default 20% tax all mean "nothing set"
+  const blankV = (f, v) => v == null || v === '' || v === 0 || v === false || (f === 'tax' && String(v) === '20');
+  const fval = (f, v) => {
+    if (v === '' || v == null) return '—';
+    if (MONEYF.has(f)) return money(v);
+    if (DATEF.has(f)) return fmtDate(v);
+    if (f === 'rate') return num(v) + '%';
+    if (f === 'tax') return v + '%';
+    if (typeof v === 'boolean') return v ? 'On' : 'Off';
+    if (typeof v === 'object') return '…';
+    const t = String(v); return t.length > 40 ? t.slice(0, 38) + '…' : t;
+  };
+  function itemName(k, x) {
+    if (!x) return '';
+    if (k === 'transactions') return `${catType(x.category) === 'Income' ? 'income' : 'expense'} ${money(x.amount)} · ${x.description || x.category || ''}${x.account ? ' · ' + x.account : ''}`;
+    if (k === 'accounts') return `account ${x.name}`;
+    if (k === 'debts') return `debt ${x.person}${x.description ? ' — ' + x.description : ''}`;
+    if (k === 'payments') { const d = debtById(x.debtId); return `payment ${money(x.amount)}${d ? ' · ' + d.person : ''}${x.account ? ' · ' + x.account : ''}`; }
+    if (k === 'transfers') return `transfer ${money(x.amount)} · ${x.from} → ${x.to}`;
+    return `${KIND[k]} ${x.name || ''}`;
+  }
+  function itemLine(it) {
+    const verb = { add: 'Added', edit: 'Edited', del: 'Deleted' }[it.a];
+    let html = `<b>${verb}</b> ${esc(itemName(it.k, it.after || it.before))}`;
+    if (it.a === 'edit') {
+      const diffs = Object.keys(Object.assign({}, it.before, it.after))
+        .filter((f) => !SKIPF.has(f) && !(blankV(f, it.before[f]) && blankV(f, it.after[f])) && JSON.stringify(it.before[f] ?? '') !== JSON.stringify(it.after[f] ?? ''))
+        .map((f) => `<span class="chg">${esc(FIELD[f] || f)}: <s>${esc(fval(f, it.before[f]))}</s> → ${esc(fval(f, it.after[f]))}</span>`);
+      if (diffs.length) html += `<span class="chgs">${diffs.slice(0, 4).join('')}</span>`;
+    }
+    return html;
+  }
+  const touches = (it, name) => [it.before, it.after].some((x) => x && (x.account === name || x.from === name || x.to === name || (it.k === 'accounts' && x.name === name)));
+  function whenText(ms) {
+    const d = new Date(ms), t = d.toLocaleTimeString('en-PH', { hour: 'numeric', minute: '2-digit' });
+    const day = ymd(d), today = todayStr(), yest = ymd(new Date(Date.now() - 864e5));
+    return `${day === today ? 'Today' : day === yest ? 'Yesterday' : d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: d.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' })}, ${t}`;
+  }
+  function logRow(g) {
+    const items = g.items || [];
+    const lines = g.bulk ? `<b>${esc(g.label || 'Big change')}</b> · ${g.bulk} items changed` : items.slice(0, 3).map((it) => `<div>${itemLine(it)}</div>`).join('') + (items.length > 3 ? `<div class="muted small">and ${items.length - 3} more change${items.length - 3 > 1 ? 's' : ''}</div>` : '');
+    const tag = g.undoOf ? '<span class="pill">Undo</span>' : g.label && !g.bulk ? `<span class="pill">${esc(g.label)}</span>` : '';
+    const btn = g.bulk ? '' : g.undone ? '<span class="muted small">Undone</span>' : `<button type="button" class="btn sm" data-act="undoLog" data-g="${g.id}">Undo</button>`;
+    return `<div class="log-row${g.undone ? ' undone' : ''}">
+      <div class="log-main"><div class="log-meta">${esc(whenText(g.at))} · ${esc(g.dev || '')} ${tag}</div><div class="log-lines">${lines}</div></div>
+      <div class="log-act">${btn}</div></div>`;
+  }
+  function viewHistory() {
+    const f = UI.logAcct && S.accounts.some((a) => a.name === UI.logAcct) ? UI.logAcct : '';
+    const list = (S.log || []).filter((g) => !f || (g.items || []).some((it) => touches(it, f)));
+    return `
+      <section class="sec-head"><h2>Action log</h2>
+        <select class="log-filter" aria-label="Show changes for">
+          <option value="">All changes</option>${S.accounts.map((a) => `<option value="${esc(a.name)}"${a.name === f ? ' selected' : ''}>${esc(a.name)} only</option>`).join('')}
+        </select></section>
+      <p class="muted small" style="margin-top:0">Every add, edit and delete, newest first, from all your devices. <b>Undo</b> puts things back the way they were before that change. The last ${LOG_MAX} changes are kept.</p>
+      <section class="card pad0 log-list">${list.length ? list.map(logRow).join('') : `<p class="empty">${f ? 'No changes for ' + esc(f) + ' yet.' : 'No changes yet. From now on, everything you add, edit or delete shows up here.'}</p>`}</section>
+      <p><button class="link" data-tab="settings">← Back to Settings</button></p>`;
+  }
+
+  function undoLog(id) {
+    const g = (S.log || []).find((x) => x.id === id);
+    if (!g || g.undone || g.bulk) return;
+    const items = g.items || [];
+    const changedSince = items.some((it) => {
+      const cur = (S[it.k] || []).find((x) => x.uid === it.uid);
+      return it.a === 'del' ? !!cur : JSON.stringify(cur || null) !== JSON.stringify(it.after || null);
+    });
+    const go = () => {
+      for (const it of [...items].reverse()) {
+        const arr = S[it.k] || (S[it.k] = []);
+        const ix = arr.findIndex((x) => x.uid === it.uid);
+        if (it.a === 'add') { if (ix >= 0) arr.splice(ix, 1); }
+        else if (it.a === 'del') { if (ix < 0) arr.push(JSON.parse(JSON.stringify(it.before))); }
+        else if (ix >= 0) arr[ix] = JSON.parse(JSON.stringify(it.before));
+        else arr.push(JSON.parse(JSON.stringify(it.before)));
+      }
+      g.undone = true;
+      save({ label: 'Undo' });
+      if (S.log[0] && S.log[0].label === 'Undo') S.log[0].undoOf = g.id;
+      save({ fromCloud: false });
+      render();
+      toast('Undone. You can undo the undo too.');
+    };
+    if (changedSince) {
+      choose('This was changed again later', 'Something in this change was edited or deleted after it. Undo will put it back exactly as it was before this change, and the later edits to it will be lost.', [
+        { label: 'Undo anyway', primary: true, fn: go },
+        { label: 'Cancel', fn: () => {} },
+      ]);
+    } else go();
+  }
+
+  function logCard() {
+    const recent = (S.log || []).slice(0, 3);
+    return `<div class="sec-head"><h2>Action log</h2><button class="link" data-act="openLog">See all</button></div>
+      <section class="card pad0 log-list">${recent.length ? recent.map(logRow).join('') : '<p class="empty">Your changes will show up here, with an Undo button.</p>'}</section>`;
+  }
+
   function viewSettings() {
     const cats = S.categories.map((c) => `<tr ${rowAttrs('category', c.uid)}><td>${esc(c.name)}</td><td><span class="pill ${c.type === 'Income' ? 'good' : ''}">${esc(c.type)}</span></td><td class="num">${num(c.budget) ? money(c.budget) : '<span class="muted">—</span>'}</td></tr>`).join('');
     return `
       <section>
         ${cloudCard()}
+        ${logCard()}
         <div class="sec-head"><h2>Your data</h2></div>
         <div class="card">
           <p class="small" style="margin-top:0">${window.cloud && window.cloud.user ? 'Saved in this browser <b>and in your cloud account</b>. Backups are still handy as an extra copy.' : 'Everything is saved in <b>this browser on this device</b> only. To use it on your phone too, ' + (window.cloud && window.cloud.enabled ? 'sign in above, or ' : '') + 'make a backup here and restore it there.'}</p>
@@ -902,7 +1051,7 @@
       </section>`;
   }
 
-  const VIEWS = { summary: viewSummary, budget: viewBudget, accounts: viewAccounts, debts: viewDebts, payments: viewPayments, settings: viewSettings };
+  const VIEWS = { summary: viewSummary, budget: viewBudget, accounts: viewAccounts, debts: viewDebts, payments: viewPayments, settings: viewSettings, history: viewHistory };
 
   // signed-out users see the sign-in page (unless they chose "this device only")
   function gateState() {
@@ -997,7 +1146,7 @@
     $('#bottomNav').innerHTML = navTabs.map(navBtn).join('');
     renderBell();
     $('#drawerNav').innerHTML = TABS.map(([k, l]) => `<button type="button" class="${UI.tab === k ? 'on' : ''}" data-tab="${k}" ${UI.tab === k ? 'aria-current="page"' : ''}>${l}</button>`).join('');
-    $('#pageTitle').textContent = (TABS.find(([k]) => k === UI.tab) || [, ''])[1];
+    $('#pageTitle').textContent = UI.tab === 'history' ? 'Action log' : (TABS.find(([k]) => k === UI.tab) || [, ''])[1];
     renderAuth();
     syncThemeButton();
     if (!storageOK && !render.warned) { render.warned = true; toast('Browser storage is blocked — changes will not be saved.', 5000); }
@@ -1496,7 +1645,7 @@
       if (!sheets['Ledger'] && !sheets['Budget'] && !sheets['Accounts']) throw new Error('This file does not look like the Budget & Debt Tracker (no Ledger, Budget or Accounts tab).');
       const { data, counts } = fromWorkbook(sheets);
       const apply = () => {
-        S = data; save(); saveUI(); UI.tab = 'summary'; render();
+        data.log = S.log; S = data; save({ label: 'Imported Excel file' }); saveUI(); UI.tab = 'summary'; render();
         toast(`Imported ${counts.accounts} accounts, ${counts.debts} debts, ${counts.payments} payments, ${counts.transactions} transactions`);
       };
       if (hasData()) {
@@ -1520,7 +1669,7 @@
     try {
       const d = JSON.parse(await file.text());
       if (!d || !Array.isArray(d.debts) || !Array.isArray(d.accounts)) throw new Error('Not a tracker backup file.');
-      const apply = () => { S = normalize(d); save(); UI.tab = 'summary'; render(); toast('Backup restored'); };
+      const apply = () => { const keep = S.log; S = normalize(d); S.log = keep; save({ label: 'Restored a backup' }); UI.tab = 'summary'; render(); toast('Backup restored'); };
       if (hasData()) confirmBox('Restore backup?', 'This replaces everything saved here with the backup.', 'Restore', apply); else apply();
     } catch (e) { toast('Could not restore: ' + e.message, 6000); }
   }
@@ -1723,7 +1872,7 @@
     nextMonth: () => { UI.month = shiftMonth(UI.month, 1); saveUI(); render(); },
     toggleHide: () => { UI.hideMoney = !UI.hideMoney; saveUI(); render(); },
     togglePaid: () => { UI.showPaid = !UI.showPaid; saveUI(); render(); },
-    addTx: () => { closeAddMenu(); editTx(); }, addMenu: () => { addMenuOpen = !addMenuOpen; renderAddMenu(); }, scanCamera: () => pickReceipt(true), scanUpload: () => pickReceipt(false), recordInterest: (el) => recordInterest(el.dataset.uid), addDebt: () => editDebt(), addPayment: () => editPayment(), addAccount: () => editAccount(),
+    addTx: () => { closeAddMenu(); editTx(); }, openLog: () => { UI.tab = 'history'; UI.logAcct = ''; saveUI(); render(); window.scrollTo(0, 0); }, undoLog: (el) => undoLog(el.dataset.g), addMenu: () => { addMenuOpen = !addMenuOpen; renderAddMenu(); }, scanCamera: () => pickReceipt(true), scanUpload: () => pickReceipt(false), recordInterest: (el) => recordInterest(el.dataset.uid), addDebt: () => editDebt(), addPayment: () => editPayment(), addAccount: () => editAccount(),
     addTransfer: () => editTransfer(), addCategory: () => editCategory(),
     toggleTheme: () => setTheme(isDark() ? 'light' : 'dark'),
     setTheme: (el) => setTheme(el.dataset.v),
@@ -1759,6 +1908,7 @@
   });
   document.addEventListener('change', (e) => {
     if (e.target.id === 'monthPick' && e.target.value) { UI.month = e.target.value; saveUI(); render(); }
+    if (e.target.classList.contains('log-filter')) { UI.logAcct = e.target.value; saveUI(); render(); }
   });
   $('#fileXlsx').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importXlsxFile(f); });
   for (const id of ['#fileCam', '#fileImg']) $(id).addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) scanFile(f); });
@@ -1779,7 +1929,7 @@
   // post any end-of-month interest that is due (after the cloud copy is loaded, so devices don't clash)
   function runAuto() {
     const n = autoInterest();
-    if (n) { save(); render(); toast(`Added interest for ${n} month${n > 1 ? 's' : ''}`); }
+    if (n) { save({ label: 'Automatic interest' }); render(); toast(`Added interest for ${n} month${n > 1 ? 's' : ''}`); }
   }
   setTimeout(() => { const c = window.cloud; if (!c || !c.enabled || (c.ready && !c.user)) runAuto(); }, 1500);
   { const t = textSize(); if (TEXT_ZOOM[t]) { document.documentElement.style.zoom = TEXT_ZOOM[t]; document.documentElement.setAttribute('data-text', t); } }
@@ -1791,6 +1941,6 @@
     // used by cloud.js
     replace(data, opts) { S = normalize(data); save(opts); render(); },
     signedIn() { if (UI.localOnly) { UI.localOnly = false; saveUI(); } },
-    clearLocal() { S = blank(); try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } UI.tab = 'summary'; UI.localOnly = false; saveUI(); render(); },
+    clearLocal() { S = blank(); snap = takeSnap(); try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } UI.tab = 'summary'; UI.localOnly = false; saveUI(); render(); },
   };
 })();
