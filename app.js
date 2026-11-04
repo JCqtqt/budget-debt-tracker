@@ -770,7 +770,7 @@
     const tr = [...S.transfers].sort((a, b) => (b.date || '').localeCompare(a.date || '')).map((x) => `<tr ${rowAttrs('transfer', x.uid)}>
         <td>${esc(fmtDate(x.date))}</td><td>${esc(x.from)} → ${esc(x.to)}${x.notes ? `<div class="desc">${esc(x.notes)}</div>` : ''}</td><td class="num">${money(x.amount)}</td></tr>`).join('');
     return `
-      <section class="sec-head"><h2>My accounts</h2><span class="btn-row" style="margin:0"><button class="btn" data-act="openLog">Action log</button><button class="btn primary" data-act="addAccount">+ Account</button></span></section>
+      <section class="sec-head"><h2>My accounts</h2><span class="btn-row" style="margin:0"><button class="btn" data-act="statement">Statement</button><button class="btn" data-act="openLog">Action log</button><button class="btn primary" data-act="addAccount">+ Account</button></span></section>
       <section class="card pad0 table-wrap"><table>
         <thead><tr><th>Account</th><th class="num hide-sm">Starting</th><th class="num hide-sm">Money in</th><th class="num hide-sm">Money out</th><th class="num hide-sm">Transfers</th><th class="num">Balance</th></tr></thead>
         <tbody>${rows || emptyRow(6, 'Add your banks, e-wallets and cash.')}</tbody>
@@ -998,6 +998,178 @@
     } else go();
   }
 
+  // ---------- statement (printable, saved as PDF by the browser) ----------
+  const prevDay = (d) => { const [y, m, dd] = d.split('-').map(Number); return ymd(new Date(y, m - 1, dd - 1)); };
+  // every money movement of one account, signed (+ in, − out), same rules as accountCalc
+  function acctEntries(a) {
+    const since = (x) => !a.asOf || (x.date || '') >= a.asOf;
+    const out = [];
+    for (const t of S.transactions) if (t.account === a.name && since(t)) {
+      const inc = catType(t.category) === 'Income';
+      out.push({ date: t.date, what: t.description || t.category, cat: t.category, amt: inc ? num(t.amount) : -num(t.amount), acct: a.name, uid: 't' + t.uid });
+    }
+    for (const p of S.payments) if (p.account === a.name && since(p)) {
+      const d = debtById(p.debtId), back = payType(p) === OWED;
+      out.push({ date: p.date, what: (back ? 'Payment received' : 'Debt payment') + (d ? ' · ' + d.person + (d.description ? ' — ' + d.description : '') : ''), cat: back ? 'Paid back to me' : S.settings.debtCategory, amt: back ? num(p.amount) : -num(p.amount), acct: a.name, uid: 'p' + p.uid });
+    }
+    for (const d of S.debts) if (d.account === a.name && since(d)) {
+      const lent = d.type === OWED;
+      out.push({ date: d.date, what: (lent ? 'Lent to ' : 'Borrowed from ') + d.person + (d.description ? ' — ' + d.description : ''), cat: lent ? 'Loan given' : 'Loan received', amt: lent ? -num(d.amount) : num(d.amount), acct: a.name, uid: 'd' + d.uid });
+    }
+    for (const t of S.transfers) if (since(t) && (t.from === a.name || t.to === a.name)) {
+      const inn = t.to === a.name;
+      out.push({ date: t.date, what: inn ? 'Transfer from ' + t.from : 'Transfer to ' + t.to, cat: 'Transfer', amt: inn ? num(t.amount) : -num(t.amount), acct: a.name, uid: 'x' + t.uid, transfer: true, pair: t.uid });
+    }
+    return out;
+  }
+
+  function statementHTML({ acct, from, to, debts }) {
+    const accts = acct ? S.accounts.filter((a) => a.name === acct) : S.accounts;
+    const all = !acct;
+    let opening = 0, rows = [];
+    const notes = [];
+    for (const a of accts) {
+      opening += accountCalc(a, prevDay(from)).current;
+      if (a.asOf && a.asOf > from) notes.push(`${a.name} is tracked from ${fmtDate(a.asOf)}; its starting balance is counted as of that date.`);
+      rows.push(...acctEntries(a).filter((e) => e.date >= from && e.date <= to && !(all && e.transfer)));
+    }
+    rows.sort((x, y) => (x.date || '').localeCompare(y.date || '') || (y.amt - x.amt));
+    let bal = opening, inn = 0, outt = 0;
+    const cats = {};
+    const body = rows.map((e) => {
+      bal += e.amt;
+      if (e.amt >= 0) inn += e.amt; else { outt -= e.amt; cats[e.cat] = (cats[e.cat] || 0) - e.amt; }
+      return `<tr><td class="d">${esc(fmtDate(e.date))}</td><td>${esc(e.what || '')}<div class="c">${esc(e.cat || '')}${all ? ' · ' + esc(e.acct) : ''}</div></td>
+        <td class="n in">${e.amt >= 0 ? money(e.amt) : ''}</td><td class="n">${e.amt < 0 ? money(-e.amt) : ''}</td><td class="n b">${money(bal)}</td></tr>`;
+    }).join('');
+    const closing = bal;
+    const u = window.cloud && window.cloud.user;
+    let logo = new URL('assets/sawada-logo.png?v=2', location.href).href;
+    try { // embed the logo so it shows in the new tab and in the PDF
+      const im = document.querySelector('header .brand img');
+      if (im && im.naturalWidth) { const c = document.createElement('canvas'); c.width = c.height = 128; c.getContext('2d').drawImage(im, 0, 0, 128, 128); logo = c.toDataURL('image/png'); }
+    } catch (e) { /* keep the link */ }
+    const title = `SAWADA Statement - ${acct || 'All accounts'} - ${fmtDate(from)} to ${fmtDate(to)}`;
+    const catRows = Object.entries(cats).sort((x, y) => y[1] - x[1]).map(([c, v]) => `<tr><td>${esc(c)}</td><td class="n">${money(v)}</td><td class="n">${outt ? Math.round(v / outt * 100) : 0}%</td></tr>`).join('');
+    const openDebts = debts ? S.debts.map((d) => ({ d, c: debtCalc(d) })).filter(({ c }) => c.balance > 0.004) : [];
+    const debtRows = openDebts.map(({ d, c }) => `<tr><td>${esc(d.person)}${d.description ? `<div class="c">${esc(d.description)}</div>` : ''}</td><td>${esc(d.type)}</td><td class="n">${money(d.amount)}</td><td class="n">${money(c.paid)}</td><td class="n b">${money(c.balance)}</td><td>${esc(c.status)}</td></tr>`).join('');
+    const owe = sum(openDebts.filter(({ d }) => d.type !== OWED), (x) => x.c.balance), me = sum(openDebts.filter(({ d }) => d.type === OWED), (x) => x.c.balance);
+    const perAcct = all && accts.length > 1 ? accts.map((a) => {
+      const o = accountCalc(a, prevDay(from)).current, c = accountCalc(a, to).current;
+      return `<tr><td>${esc(a.name)}<div class="c">${esc(a.type || '')}</div></td><td class="n">${money(o)}</td><td class="n">${money(c)}</td></tr>`;
+    }).join('') : '';
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(title)}</title>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  @page { size: A4; margin: 14mm 12mm; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: Roboto, Arial, sans-serif; color: #0E1520; font-size: 12px; background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .page { max-width: 820px; margin: 0 auto; padding: 24px 20px 40px; }
+  .bar { position: sticky; top: 0; background: #0E1520; color: #fff; padding: 10px 16px; display: flex; gap: 10px; align-items: center; justify-content: space-between; font-size: 13px; }
+  .bar button { font: inherit; font-weight: 700; border: 0; border-radius: 10px; padding: 10px 16px; background: #E11D2E; color: #fff; cursor: pointer; }
+  .bar .x { background: transparent; color: #fff; border: 1px solid rgba(255,255,255,.4); font-weight: 500; }
+  header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; border-bottom: 3px solid #E11D2E; padding-bottom: 14px; }
+  .brand { display: flex; gap: 10px; align-items: center; }
+  .brand img { width: 44px; height: 44px; border-radius: 10px; }
+  .brand b { font-size: 18px; letter-spacing: .3px; } .brand b i { color: #E11D2E; font-style: normal; }
+  .brand span { display: block; color: #5B6472; font-size: 11px; }
+  h1 { margin: 0; font-size: 20px; text-align: right; }
+  .meta { text-align: right; color: #5B6472; font-size: 11px; line-height: 1.5; margin-top: 4px; }
+  .sum { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 16px 0; }
+  .sum div { border: 1px solid #E4E7EC; border-radius: 10px; padding: 10px 12px; }
+  .sum small { display: block; color: #5B6472; font-size: 10.5px; text-transform: uppercase; letter-spacing: .4px; }
+  .sum b { font-size: 15px; font-variant-numeric: tabular-nums; }
+  .sum .hl { background: #0E1520; color: #fff; border-color: #0E1520; } .sum .hl small { color: #C9CED6; }
+  h2 { font-size: 13px; margin: 20px 0 6px; text-transform: uppercase; letter-spacing: .5px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th { text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: .4px; color: #5B6472; border-bottom: 1.5px solid #0E1520; padding: 6px; }
+  td { padding: 6px; border-bottom: 1px solid #E4E7EC; vertical-align: top; }
+  tr { break-inside: avoid; }
+  thead { display: table-header-group; }
+  .n { text-align: right; white-space: nowrap; } th.n { text-align: right; }
+  .d { white-space: nowrap; color: #3A4250; }
+  .c { color: #7A8291; font-size: 10.5px; margin-top: 1px; }
+  .b { font-weight: 700; } .in { color: #0E1520; }
+  .ob td { background: #F5F6F8; font-weight: 500; } .cb td { background: #F5F6F8; font-weight: 700; border-top: 1.5px solid #0E1520; }
+  .empty { padding: 18px; text-align: center; color: #7A8291; }
+  .note { color: #7A8291; font-size: 10.5px; margin-top: 18px; line-height: 1.5; }
+  @media (max-width: 560px) { .sum { grid-template-columns: repeat(2, 1fr); } header { flex-direction: column; } h1, .meta { text-align: left; } .page { padding: 16px 10px 30px; } td, th { padding: 5px 3px; } body { font-size: 11px; } }
+  @media print { .bar { display: none; } .page { padding: 0; max-width: none; } }
+</style></head><body>
+<div class="bar"><span>Statement ready</span><span><button class="x" onclick="window.close()">Close</button> <button onclick="window.print()">Save as PDF</button></span></div>
+<div class="page">
+  <header>
+    <div class="brand"><img src="${logo}" alt=""><div><b>SAWADA<i>.</i></b> Budget Tracker<span>${esc(u && u.displayName ? u.displayName : 'Personal statement')}${u && u.email ? ' · ' + esc(u.email) : ''}</span></div></div>
+    <div><h1>Account statement</h1><div class="meta">${esc(acct || 'All accounts')}<br>${esc(fmtDate(from))} – ${esc(fmtDate(to))}<br>Generated ${esc(new Date().toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }))}</div></div>
+  </header>
+  <div class="sum">
+    <div><small>Opening balance</small><b>${money(opening)}</b></div>
+    <div><small>Money in</small><b>+${money(inn)}</b></div>
+    <div><small>Money out</small><b>−${money(outt)}</b></div>
+    <div class="hl"><small>Closing balance</small><b>${money(closing)}</b></div>
+  </div>
+  ${perAcct ? `<h2>Accounts</h2><table><thead><tr><th>Account</th><th class="n">Opening</th><th class="n">Closing</th></tr></thead><tbody>${perAcct}</tbody></table>` : ''}
+  <h2>Transactions · ${rows.length}</h2>
+  <table><thead><tr><th>Date</th><th>Description</th><th class="n">In</th><th class="n">Out</th><th class="n">Balance</th></tr></thead>
+  <tbody><tr class="ob"><td class="d">${esc(fmtDate(from))}</td><td>Opening balance</td><td></td><td></td><td class="n">${money(opening)}</td></tr>
+  ${body || '<tr><td colspan="5" class="empty">No transactions in this period.</td></tr>'}
+  <tr class="cb"><td class="d">${esc(fmtDate(to))}</td><td>Closing balance</td><td class="n">${money(inn)}</td><td class="n">${money(outt)}</td><td class="n">${money(closing)}</td></tr></tbody></table>
+  ${catRows ? `<h2>Spending by category</h2><table><thead><tr><th>Category</th><th class="n">Amount</th><th class="n">Share</th></tr></thead><tbody>${catRows}</tbody></table>` : ''}
+  ${debts ? `<h2>Open debts (as of today)</h2>${debtRows ? `<table><thead><tr><th>Person</th><th>Type</th><th class="n">Total</th><th class="n">Paid</th><th class="n">Balance</th><th>Status</th></tr></thead><tbody>${debtRows}</tbody></table>
+    <p class="c" style="margin-top:6px">I still owe ${money(owe)} · Others owe me ${money(me)}</p>` : '<p class="c">No open debts.</p>'}` : ''}
+  <p class="note">${all ? 'Transfers between your own accounts are left out of the all-accounts view because they don\'t change your total. ' : ''}${notes.map(esc).join(' ')} This statement is made from the entries in your SAWADA tracker. It is not an official bank document.</p>
+</div>
+<script>if (matchMedia('(pointer:fine)').matches) setTimeout(function(){ window.print(); }, 700);<\/script>
+</body></html>`;
+  }
+
+  function editStatement() {
+    if (!S.accounts.length) { toast('Add an account first.'); return; }
+    const ym = todayStr().slice(0, 7), last = shiftMonth(ym, -1);
+    const periods = [
+      { value: 'this', label: `This month (${monthLabel(ym)})` },
+      { value: 'last', label: `Last month (${monthLabel(last)})` },
+      { value: '3m', label: 'Last 3 months' },
+      { value: 'year', label: `This year (${ym.slice(0, 4)})` },
+      { value: 'custom', label: 'Custom dates…' },
+    ];
+    const custom = { key: 'period', value: 'custom' };
+    openForm({
+      title: 'Statement (PDF)',
+      note: 'Pick an account and period. The statement opens in a new tab: tap <b>Save as PDF</b> (on iPhone: Share → Save to Files).',
+      fields: [
+        { key: 'acct', label: 'Account', type: 'select', options: [{ value: '', label: 'All accounts' }, ...S.accounts.map((a) => ({ value: a.name, label: a.name }))], full: true },
+        { key: 'period', label: 'Period', type: 'select', options: periods, default: UI.stmtPeriod || 'this', full: true },
+        { key: 'from', label: 'From', type: 'date', default: ym + '-01', showIf: custom },
+        { key: 'to', label: 'To', type: 'date', default: todayStr(), showIf: custom },
+        { key: 'debts', label: 'Include my open debts', type: 'check', default: true, full: true },
+      ],
+      values: { acct: UI.stmtAcct || '' },
+      saveLabel: 'Create statement',
+      onSave: (v) => {
+        let from, to;
+        if (v.period === 'this') { from = ym + '-01'; to = todayStr(); }
+        else if (v.period === 'last') { from = last + '-01'; to = lastDay(last); }
+        else if (v.period === '3m') { from = shiftMonth(ym, -2) + '-01'; to = todayStr(); }
+        else if (v.period === 'year') { from = ym.slice(0, 4) + '-01-01'; to = todayStr(); }
+        else { from = v.from; to = v.to; if (!from || !to) return 'Pick both dates.'; if (from > to) return '"From" must be before "To".'; }
+        UI.stmtAcct = v.acct; UI.stmtPeriod = v.period; saveUI();
+        const html = statementHTML({ acct: v.acct, from, to, debts: v.debts });
+        const w = window.open('', '_blank');
+        if (w) { w.document.open(); w.document.write(html); w.document.close(); }
+        else {
+          // pop-ups blocked: print from a hidden frame instead
+          const f = document.createElement('iframe');
+          f.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0';
+          document.body.appendChild(f);
+          f.contentDocument.open(); f.contentDocument.write(html.replace(/<script>[\s\S]*?<\/script>/, '')); f.contentDocument.close();
+          setTimeout(() => { f.contentWindow.focus(); f.contentWindow.print(); setTimeout(() => f.remove(), 60000); }, 800);
+        }
+      },
+    });
+  }
+
   function logCard() {
     const recent = (S.log || []).slice(0, 3);
     return `<div class="sec-head"><h2>Action log</h2><button class="link" data-act="openLog">See all</button></div>
@@ -1016,6 +1188,7 @@
           ${storageOK ? '' : '<p class="bad small">This browser is blocking storage (private mode?). Changes will be lost when you close the page. Make a backup before leaving.</p>'}
           <div class="btn-row">
             <button class="btn primary" data-act="importXlsx">Import Excel file</button>
+            <button class="btn" data-act="statement">Statement (PDF)</button>
             <button class="btn" data-act="backupJson">Download backup</button>
             <button class="btn" data-act="restoreJson">Restore backup</button>
             <button class="btn" data-act="exportCsv">Export CSV</button>
@@ -1872,7 +2045,7 @@
     nextMonth: () => { UI.month = shiftMonth(UI.month, 1); saveUI(); render(); },
     toggleHide: () => { UI.hideMoney = !UI.hideMoney; saveUI(); render(); },
     togglePaid: () => { UI.showPaid = !UI.showPaid; saveUI(); render(); },
-    addTx: () => { closeAddMenu(); editTx(); }, openLog: () => { UI.tab = 'history'; UI.logAcct = ''; saveUI(); render(); window.scrollTo(0, 0); }, undoLog: (el) => undoLog(el.dataset.g), addMenu: () => { addMenuOpen = !addMenuOpen; renderAddMenu(); }, scanCamera: () => pickReceipt(true), scanUpload: () => pickReceipt(false), recordInterest: (el) => recordInterest(el.dataset.uid), addDebt: () => editDebt(), addPayment: () => editPayment(), addAccount: () => editAccount(),
+    addTx: () => { closeAddMenu(); editTx(); }, statement: () => editStatement(), openLog: () => { UI.tab = 'history'; UI.logAcct = ''; saveUI(); render(); window.scrollTo(0, 0); }, undoLog: (el) => undoLog(el.dataset.g), addMenu: () => { addMenuOpen = !addMenuOpen; renderAddMenu(); }, scanCamera: () => pickReceipt(true), scanUpload: () => pickReceipt(false), recordInterest: (el) => recordInterest(el.dataset.uid), addDebt: () => editDebt(), addPayment: () => editPayment(), addAccount: () => editAccount(),
     addTransfer: () => editTransfer(), addCategory: () => editCategory(),
     toggleTheme: () => setTheme(isDark() ? 'light' : 'dark'),
     setTheme: (el) => setTheme(el.dataset.v),
