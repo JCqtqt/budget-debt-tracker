@@ -1,6 +1,6 @@
 // Cloud sync with Firebase: Google sign-in + one private Firestore document per user.
 // The app keeps working offline from the browser copy; this file mirrors it to the cloud.
-import * as cfg from './firebase-config.js?v=27';
+import * as cfg from './firebase-config.js?v=28';
 const { firebaseConfig } = cfg;
 
 // newer SDK first (needed for the receipt scanner); the old one is a safety net for sign-in + sync

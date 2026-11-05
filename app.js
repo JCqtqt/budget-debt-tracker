@@ -322,6 +322,20 @@
   const EYE = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
   const EYE_OFF = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.9 10.9 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.1M6.6 6.6A17.4 17.4 0 0 0 2 12s3.6 7 10 7a9.9 9.9 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
   const secret = (text) => (UI.hideMoney ? '<span class="masked" aria-label="Hidden">₱ ••••••</span>' : text);
+  // ---------- account cards (look like real bank cards) ----------
+  const CARD_COLORS = [['midnight', 'Midnight'], ['red', 'SAWADA red'], ['blue', 'Blue'], ['emerald', 'Emerald'], ['violet', 'Violet'], ['graphite', 'Graphite'], ['gold', 'Gold']];
+  // until you pick one, each account gets a color from its place in your list
+  const cardColor = (a) => (CARD_COLORS.some(([k]) => k === a.color) ? a.color : CARD_COLORS[Math.max(0, S.accounts.indexOf(a)) % CARD_COLORS.length][0]);
+  function cardHTML(a, bal, { i = 0, tag = 'button', preview = false } = {}) {
+    const col = cardColor(a);
+    const attrs = preview ? 'aria-hidden="true"' : `type="button" style="--i:${i}" data-edit="account" data-uid="${a.uid}" aria-label="${esc(a.name)}, ${esc(a.type || '')}${UI.hideMoney ? '' : ', balance ' + esc(money(bal))}"`;
+    return `<${tag} class="acct cardv c-${col}${Math.abs(bal) < 0.005 ? ' zero' : ''}${preview ? ' preview' : ''}" ${attrs}>
+      <span class="cv-top"><span class="cv-name"><b>${esc(a.name || 'Account')}</b><small>${esc(a.type || '')}</small></span><span class="cv-brand">SAWADA<i>.</i></span></span>
+      <span class="cv-mid"><span class="cv-chip"></span>${num(a.rate) > 0 ? `<span class="cv-rate">${rateText(a)}</span>` : ''}</span>
+      <span class="cv-bot"><b class="cv-bal">${secret(money(bal).replace(/^-/, '−'))}</b>${a.last4 ? `<span class="cv-num">•••• ${esc(a.last4)}</span>` : ''}</span>
+    </${tag}>`;
+  }
+
   // ---------- donut charts on the Summary page ----------
   // colors: CSS variables --c1..--c5 (validated for colorblind separation, light + dark), --c6 = "Other"
   let chartSel = { e: null, a: null };
@@ -454,11 +468,9 @@
       <section>
         <div class="sec-head"><h2>Accounts <span class="muted">· ${S.accounts.length}</span></h2><button class="link" data-act="addAccount">+ Add</button></div>
         <div class="acct-strip" id="acctStrip" aria-label="Accounts">
-          ${accts.map(({ a, bal }, i) => `<button type="button" class="acct${Math.abs(bal) < 0.005 ? ' zero' : ''}" style="--i:${i}" data-edit="account" data-uid="${a.uid}">
-            <span class="head"><span class="name">${esc(a.name)}</span><span class="dot"></span></span>
-            <span><span class="bal${bal < 0 ? ' bad' : ''}">${money(bal)}</span><br><span class="type">${esc(a.type || '')}${num(a.rate) > 0 ? ` · <span class="rate">${rateText(a)}</span>` : ''}</span></span>
-          </button>`).join('')}
-          <div class="acct total"><span class="head"><span class="name">Total money</span></span><span><span class="bal">${secret(money(t.cash))}</span><br><span class="type">${S.accounts.length} accounts</span></span></div>
+          ${accts.map(({ a, bal }, i) => cardHTML(a, bal, { i })).join('')}
+          <div class="acct cardv total" style="--i:${accts.length}"><span class="cv-top"><span class="cv-name"><b>Total money</b><small>${S.accounts.length} account${S.accounts.length === 1 ? '' : 's'}</small></span></span>
+            <span class="cv-bot"><b class="cv-bal">${secret(money(t.cash).replace(/^-/, '−'))}</b></span></div>
         </div>
         <div class="strip-dots" id="stripDots" aria-hidden="true">${Array.from({ length: dots }, (_, i) => `<span${i === 0 ? ' class="on"' : ''}></span>`).join('')}</div>
       </section>
@@ -1553,13 +1565,17 @@
     if (f.type === 'check') {
       return `<div class="field${f.full ? ' full' : ''}" data-field="${f.key}"><label class="check"><input type="checkbox" id="${id}" name="${f.key}"${val === true || (val === '' && f.default) ? ' checked' : ''}> <span>${esc(f.label)}</span></label>${f.hint ? `<div class="hint">${f.hint}</div>` : ''}</div>`;
     }
+    if (f.type === 'swatch') {
+      const opts = typeof f.options === 'function' ? f.options() : f.options;
+      return `<div class="field${f.full ? ' full' : ''}" data-field="${f.key}"><span class="lbl">${esc(f.label)}</span><div class="swatches" role="radiogroup" aria-label="${esc(f.label)}">${opts.map(([k, l]) => `<label class="sw c-${k}" title="${esc(l)}"><input type="radio" name="${f.key}" value="${k}"${String(val) === k ? ' checked' : ''} aria-label="${esc(l)}"><span></span></label>`).join('')}</div>${f.hint ? `<div class="hint">${f.hint}</div>` : ''}</div>`;
+    }
     if (f.type === 'select') {
       const opts = (typeof f.options === 'function' ? f.options() : f.options).map((o) => (typeof o === 'object' ? o : { value: o, label: o }));
       input = `<select id="${id}" name="${f.key}"${req}>${f.placeholder ? `<option value="">${esc(f.placeholder)}</option>` : ''}${opts.map((o) => `<option value="${esc(o.value)}"${String(o.value) === String(val) ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select>`;
     } else if (f.type === 'money') {
       input = `<input id="${id}" name="${f.key}" type="text" inputmode="decimal" autocomplete="off" value="${val === '' ? '' : esc(val)}" placeholder="0.00"${req}>`;
     } else {
-      input = `<input id="${id}" name="${f.key}" type="${f.type || 'text'}" value="${esc(val)}"${f.list ? ` list="${id}_l"` : ''} autocomplete="off"${req}>`
+      input = `<input id="${id}" name="${f.key}" type="${f.type || 'text'}" value="${esc(val)}"${f.list ? ` list="${id}_l"` : ''} autocomplete="off"${req}${f.attrs ? ' ' + f.attrs : ''}>`
         + (f.list ? `<datalist id="${id}_l">${f.list().map((o) => `<option value="${esc(o)}">`).join('')}</datalist>` : '');
     }
     return `<div class="field${f.full ? ' full' : ''}" data-field="${f.key}"><label for="${id}">${esc(f.label)}${f.required ? '' : ' <span class="muted">(optional)</span>'}</label>${input}${f.hint ? `<div class="hint">${f.hint}</div>` : ''}</div>`;
@@ -1769,13 +1785,22 @@
         { key: 'type', label: 'Type', type: 'select', options: ACCOUNT_TYPES, default: 'Bank', required: true },
         { key: 'start', label: 'Balance (₱)', type: 'money', required: true, hint: 'What the account has on the date →' },
         { key: 'asOf', label: 'As of', type: 'date', required: true, default: todayStr(), hint: 'Entries from this date on update the balance.' },
+        { key: 'color', label: 'Card color', type: 'swatch', options: CARD_COLORS, default: a ? cardColor(a) : CARD_COLORS[S.accounts.length % CARD_COLORS.length][0], full: true },
+        { key: 'last4', label: 'Last 4 digits', attrs: 'inputmode="numeric" maxlength="4" pattern="[0-9]*"', hint: 'Only to tell cards apart. Never enter a full card or account number.' },
         { key: 'rate', label: 'Interest (% per year)', type: 'money', hint: 'e.g. 4 for a digital bank paying 4% p.a.' },
         { key: 'tax', label: 'Tax on interest', type: 'select', options: TAX_OPTS, default: '20' },
         { key: 'autoInterest', label: 'Add the interest automatically at the end of each month', type: 'check', full: true, hint: ' ' },
         { key: 'notes', label: 'Notes', full: true },
       ],
       values: a || {},
+      head: `<div class="card-preview">${cardHTML(a || { name: '', type: 'Bank' }, a ? accountCalc(a).current : 0, { tag: 'div', preview: true })}</div>`,
       onChange: (f) => {
+        const pv = f.querySelector('.card-preview');
+        if (pv) {
+          const el = f.elements;
+          const draft = { ...(a || {}), name: el.name.value.trim() || 'Account', type: el.type.value, color: el.color.value, last4: (el.last4.value || '').replace(/\D/g, '').slice(0, 4), rate: num(el.rate.value) };
+          pv.innerHTML = cardHTML(draft, a ? accountCalc(a).current : num(el.start.value), { tag: 'div', preview: true });
+        }
         const r = num(f.elements.rate.value), bal = a ? accountCalc(a).current : num(f.elements.start.value);
         const tax = num(f.elements.tax.value);
         const est = interestEst({ rate: r, tax }, bal);
@@ -1788,6 +1813,8 @@
       onSave: (v) => {
         if (S.accounts.some((x) => x !== a && x.name.toLowerCase() === v.name.toLowerCase())) return 'You already have an account with that name.';
         if (v.rate < 0 || v.rate > 100) return 'Interest must be between 0 and 100%.';
+        v.last4 = String(v.last4 || '').replace(/\s/g, '');
+        if (v.last4 && !/^\d{4}$/.test(v.last4)) return 'Last 4 digits must be exactly 4 numbers (or leave it empty).';
         if (!(v.rate > 0)) { v.rate = 0; v.autoInterest = false; }
         if (v.autoInterest && !(a && a.autoInterest && a.interestStart)) v.interestStart = todayStr();
         if (!v.autoInterest) v.interestStart = '';

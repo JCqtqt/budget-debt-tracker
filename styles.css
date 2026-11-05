@@ -602,3 +602,62 @@ input[type="date"]::-webkit-date-and-time-value { text-align: left; }
 .lg-amt { font-size: 14px; font-weight: 500; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .lg-pct { width: 38px; text-align: right; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 @media (prefers-reduced-motion: reduce) { .dn-seg, .lg-row { transition: none; } }
+
+/* ---------- account cards (real bank-card look) ---------- */
+.c-midnight { --g1: #1B2433; --g2: #0B0F16; }
+.c-red { --g1: #E11D2E; --g2: #7A0C17; }
+.c-blue { --g1: #2563EB; --g2: #0B2A80; }
+.c-emerald { --g1: #10A37F; --g2: #064734; }
+.c-violet { --g1: #6D4BEA; --g2: #2A1A7A; }
+.c-graphite { --g1: #5B6372; --g2: #1F242D; }
+.c-gold { --g1: #D4A537; --g2: #7A5A12; }
+.acct.cardv { position: relative; overflow: hidden; aspect-ratio: 1.586; height: auto; padding: 14px 16px; border: 0; border-radius: 16px; gap: 0; justify-content: space-between; color: #fff;
+  background: linear-gradient(135deg, var(--g1, #1B2433) 0%, var(--g2, #0B0F16) 100%);
+  box-shadow: 0 12px 22px -12px var(--g2, #0B0F16), 0 2px 6px rgba(0, 0, 0, .12), inset 0 1px 0 rgba(255, 255, 255, .18); }
+.acct.cardv::before { content: ''; position: absolute; inset: 0; background: linear-gradient(115deg, rgba(255, 255, 255, .16) 0%, rgba(255, 255, 255, 0) 42%); pointer-events: none; }
+.acct.cardv::after { content: ''; position: absolute; right: -22%; bottom: -45%; width: 78%; aspect-ratio: 1; border-radius: 50%; border: 16px solid rgba(255, 255, 255, .06); pointer-events: none; }
+.acct.cardv:hover { transform: translateY(-2px); box-shadow: 0 16px 26px -12px var(--g2, #0B0F16), 0 4px 10px rgba(0, 0, 0, .14), inset 0 1px 0 rgba(255, 255, 255, .18); }
+.acct.cardv.zero { filter: saturate(.55); opacity: .8; }
+.cardv > span { position: relative; z-index: 1; }
+.cv-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.cv-name { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.cv-name b { font-size: 15px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cv-name small { font-size: 10px; opacity: .75; text-transform: uppercase; letter-spacing: .08em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cv-brand { font-size: 11px; font-weight: 700; letter-spacing: .02em; opacity: .9; flex: none; }
+.cv-brand i { font-style: normal; color: #FF4D5E; }
+.c-red .cv-brand i { color: #fff; }
+.cv-mid { display: flex; align-items: center; gap: 8px; }
+.cv-chip { width: 30px; height: 22px; border-radius: 5px; position: relative; overflow: hidden; background: linear-gradient(135deg, #F3D98B 0%, #C9A44A 45%, #E9CC7A 100%); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .18); }
+.cv-chip::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: rgba(0, 0, 0, .25); }
+.cv-chip::after { content: ''; position: absolute; top: 0; bottom: 0; left: 35%; width: 30%; border-left: 1px solid rgba(0, 0, 0, .25); border-right: 1px solid rgba(0, 0, 0, .25); }
+.cv-rate { margin-left: auto; font-size: 10px; font-weight: 500; padding: 3px 8px; border-radius: 999px; background: rgba(255, 255, 255, .18); white-space: nowrap; }
+.cv-bot { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.cv-bal { font-size: 19px; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.cv-bal .masked { color: inherit; }
+.cv-num { font-family: ui-monospace, 'Roboto Mono', Menlo, monospace; font-size: 11px; letter-spacing: .1em; opacity: .8; }
+.acct.cardv.total { background: var(--surface); color: var(--text); border: 1.5px dashed var(--border); box-shadow: none; justify-content: space-between; }
+.acct.cardv.total::before, .acct.cardv.total::after { display: none; }
+.acct-strip:has(.cardv) { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+@media (max-width: 760px) {
+  .acct.cardv { flex: 0 0 calc((100vw - 58px) / 2); padding: 11px 12px; border-radius: 13px; }
+  .acct.cardv::after { border-width: 10px; }
+  .cv-name b { font-size: 13px; }
+  .cv-name small { font-size: 8.5px; }
+  .cv-brand { font-size: 9px; }
+  .cv-chip { width: 22px; height: 16px; border-radius: 4px; }
+  .cv-rate { font-size: 8.5px; padding: 2px 6px; }
+  .cv-bal { font-size: 15px; }
+  .cv-num { font-size: 9.5px; }
+}
+/* card colour picker + live preview in the account form */
+.card-preview { display: flex; justify-content: center; }
+.card-preview .acct.cardv { width: min(300px, 100%); flex: none; cursor: default; padding: 16px 18px; border-radius: 16px; }
+.card-preview .cv-name b { font-size: 16px; } .card-preview .cv-name small { font-size: 10.5px; } .card-preview .cv-brand { font-size: 12px; }
+.card-preview .cv-chip { width: 34px; height: 25px; } .card-preview .cv-bal { font-size: 22px; } .card-preview .cv-num { font-size: 12px; } .card-preview .cv-rate { font-size: 10.5px; padding: 3px 8px; }
+.swatches { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
+.sw { position: relative; cursor: pointer; }
+.sw input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.sw span { display: block; width: 38px; height: 38px; border-radius: 11px; background: linear-gradient(135deg, var(--g1), var(--g2)); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .08); transition: box-shadow .15s; }
+.sw input:checked + span { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--text); }
+.sw input:focus-visible + span { outline: 2px solid var(--red); outline-offset: 4px; }
+.field .lbl { font-size: 13px; font-weight: 500; color: var(--muted); }
