@@ -1182,6 +1182,158 @@
 </body></html>`;
   }
 
+  // ----- real PDF file (MiniPDF in minipdf.js) — works on iPhone, saves through the share sheet -----
+  function statementPDF({ acct, from, to, debts }) {
+    const accts = acct ? S.accounts.filter((a) => a.name === acct) : S.accounts;
+    const all = !acct;
+    let opening = 0; const rows = []; const notes = [];
+    for (const a of accts) {
+      opening += accountCalc(a, prevDay(from)).current;
+      if (a.asOf && a.asOf > from) notes.push(`${a.name} is tracked from ${fmtDate(a.asOf)}; its starting balance is counted as of that date.`);
+      rows.push(...acctEntries(a).filter((e) => e.date >= from && e.date <= to && !(all && e.transfer)));
+    }
+    rows.sort((x, y) => (x.date || '').localeCompare(y.date || '') || (y.amt - x.amt));
+    let bal = opening, inn = 0, outt = 0; const cats = {};
+    for (const e of rows) { bal += e.amt; e.bal = bal; if (e.amt >= 0) inn += e.amt; else { outt -= e.amt; cats[e.cat] = (cats[e.cat] || 0) - e.amt; } }
+    const closing = bal;
+    const P = (n) => money(n).replace('₱', 'PHP ').replace(/^-/, '-');
+    const u = window.cloud && window.cloud.user;
+    const doc = new window.MiniPDF.Doc();
+    const L = 36, R = doc.W - 36, BOT = doc.H - 44, INK = '#0E1520', MUT = '#5B6472', LIGHT = '#8A929F', RED = '#E11D2E', BORDER = '#E4E7EC', SOFT = '#F5F6F8';
+    let y = 40;
+    // logo (JPEG from the header image)
+    try {
+      const im = document.querySelector('header .brand img');
+      if (im && im.naturalWidth) {
+        const c = document.createElement('canvas'); c.width = c.height = 120;
+        const g = c.getContext('2d'); g.fillStyle = '#0E1520'; g.fillRect(0, 0, 120, 120); g.drawImage(im, 0, 0, 120, 120);
+        doc.setImage(atob(c.toDataURL('image/jpeg', 0.92).split(',')[1]), 120, 120);
+      }
+    } catch (e) { /* no logo */ }
+    const header = (first) => {
+      if (first) {
+        doc.image(L, y, 36, 36);
+        const x = doc.img ? L + 46 : L;
+        const w = doc.text('SAWADA', x, y + 15, { size: 15, bold: true });
+        doc.text('.', x + w, y + 15, { size: 15, bold: true, color: RED });
+        doc.text('Budget Tracker', x + w + 8, y + 15, { size: 10, color: MUT });
+        doc.text(((u && u.displayName) || 'Personal statement') + (u && u.email ? ' · ' + u.email : ''), x, y + 30, { size: 8.5, color: MUT, maxW: 250 });
+        doc.text('Account statement', R, y + 14, { size: 16, bold: true, align: 'right' });
+        doc.text(acct || 'All accounts', R, y + 28, { size: 9, color: MUT, align: 'right' });
+        doc.text(`${fmtDate(from)} – ${fmtDate(to)}`, R, y + 39, { size: 9, color: MUT, align: 'right' });
+        doc.text('Generated ' + new Date().toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }), R, y + 50, { size: 8, color: LIGHT, align: 'right' });
+        y += 60;
+        doc.line(L, y, R, y, { color: RED, w: 2 });
+        y += 16;
+      } else {
+        doc.text(`SAWADA. Account statement · ${acct || 'All accounts'} · ${fmtDate(from)} – ${fmtDate(to)}`, L, y + 8, { size: 8.5, color: MUT });
+        y += 22;
+      }
+    };
+    const newPage = () => { doc.addPage(); y = 40; header(false); };
+    const need = (h) => { if (y + h > BOT) { newPage(); return true; } return false; };
+    header(true);
+
+    // summary boxes
+    const bw = (R - L - 3 * 8) / 4;
+    [['OPENING BALANCE', P(opening)], ['MONEY IN', '+' + P(inn)], ['MONEY OUT', '-' + P(outt)], ['CLOSING BALANCE', P(closing)]].forEach(([k, v], i) => {
+      const x = L + i * (bw + 8), dark = i === 3;
+      doc.rect(x, y, bw, 42, dark ? { fill: INK, r: 6 } : { stroke: BORDER, r: 6 });
+      doc.text(k, x + 10, y + 15, { size: 7, color: dark ? '#C9CED6' : MUT, bold: true });
+      doc.text(v, x + 10, y + 32, { size: 11.5, bold: true, color: dark ? '#FFFFFF' : INK, maxW: bw - 16 });
+    });
+    y += 58;
+
+    const h2 = (t) => { need(40); doc.text(t.toUpperCase(), L, y + 10, { size: 9.5, bold: true }); y += 18; };
+    // generic table: cols = [{t, w, align}], rows = [[cells...]], optional sub-line in first text col
+    function table(cols, data, { zebraRows = [], boldRows = [] } = {}) {
+      const xs = []; let x = L; for (const c of cols) { xs.push(x); x += c.w; }
+      const head = () => {
+        cols.forEach((c, i) => doc.text(c.t, c.align === 'right' ? xs[i] + c.w - 4 : xs[i] + 4, y + 9, { size: 7, bold: true, color: MUT, align: c.align === 'right' ? 'right' : 'left' }));
+        y += 14; doc.line(L, y, R, y, { color: INK, w: 1 }); y += 2;
+      };
+      head();
+      data.forEach((r, ri) => {
+        const hasSub = r.some((c) => c && c.sub);
+        const rh = hasSub ? 26 : 18;
+        if (need(rh)) head();
+        if (zebraRows.includes(ri)) doc.rect(L, y, R - L, rh, { fill: SOFT });
+        cols.forEach((c, i) => {
+          const cell = r[i]; if (cell == null) return;
+          const txt = typeof cell === 'object' ? cell.t : cell;
+          const bold = boldRows.includes(ri) || (typeof cell === 'object' && cell.b);
+          const tx = c.align === 'right' ? xs[i] + c.w - 4 : xs[i] + 4;
+          doc.text(txt, tx, y + 12, { size: 8.5, bold, align: c.align === 'right' ? 'right' : 'left', maxW: c.w - 8, color: INK });
+          if (typeof cell === 'object' && cell.sub) doc.text(cell.sub, tx, y + 22, { size: 7, color: LIGHT, maxW: c.w - 8 });
+        });
+        y += rh; doc.line(L, y, R, y, { color: BORDER, w: 0.5 });
+      });
+      y += 14;
+    }
+
+    if (all && accts.length > 1) {
+      h2('Accounts');
+      table([{ t: 'ACCOUNT', w: 263 }, { t: 'OPENING', w: 130, align: 'right' }, { t: 'CLOSING', w: 130, align: 'right' }],
+        accts.map((a) => [{ t: a.name, sub: a.type || '' }, P(accountCalc(a, prevDay(from)).current), P(accountCalc(a, to).current)]));
+    }
+
+    h2(`Transactions · ${rows.length}`);
+    const tcols = [{ t: 'DATE', w: 68 }, { t: 'DESCRIPTION', w: 205 }, { t: 'IN', w: 80, align: 'right' }, { t: 'OUT', w: 80, align: 'right' }, { t: 'BALANCE', w: 90, align: 'right' }];
+    const tdata = [[fmtDate(from), 'Opening balance', '', '', { t: P(opening), b: true }]];
+    for (const e of rows) tdata.push([fmtDate(e.date), { t: e.what || '', sub: (e.cat || '') + (all ? ' · ' + e.acct : '') }, e.amt >= 0 ? P(e.amt) : '', e.amt < 0 ? P(-e.amt) : '', { t: P(e.bal), b: true }]);
+    if (!rows.length) tdata.push(['', 'No transactions in this period.', '', '', '']);
+    tdata.push([fmtDate(to), 'Closing balance', P(inn), P(outt), P(closing)]);
+    table(tcols, tdata, { zebraRows: [0, tdata.length - 1], boldRows: [tdata.length - 1] });
+
+    const catRows = Object.entries(cats).sort((a, b) => b[1] - a[1]);
+    if (catRows.length) {
+      h2('Spending by category');
+      table([{ t: 'CATEGORY', w: 323 }, { t: 'AMOUNT', w: 120, align: 'right' }, { t: 'SHARE', w: 80, align: 'right' }],
+        catRows.map(([c, v]) => [c, P(v), (outt ? Math.round((v / outt) * 100) : 0) + '%']));
+    }
+    if (debts) {
+      const od = S.debts.map((d) => ({ d, c: debtCalc(d) })).filter(({ c }) => c.balance > 0.004);
+      h2('Open debts (as of today)');
+      if (od.length) {
+        table([{ t: 'PERSON', w: 133 }, { t: 'TYPE', w: 70 }, { t: 'TOTAL', w: 85, align: 'right' }, { t: 'PAID', w: 80, align: 'right' }, { t: 'BALANCE', w: 90, align: 'right' }, { t: 'STATUS', w: 65 }],
+          od.map(({ d, c }) => [{ t: d.person, sub: d.description || '' }, d.type, P(d.amount), P(c.paid), { t: P(c.balance), b: true }, c.status]));
+        const owe = sum(od.filter(({ d }) => d.type !== OWED), (x) => x.c.balance), me = sum(od.filter(({ d }) => d.type === OWED), (x) => x.c.balance);
+        doc.text(`I still owe ${P(owe)} · Others owe me ${P(me)}`, L, y - 4, { size: 8, color: MUT }); y += 8;
+      } else { doc.text('No open debts.', L, y + 4, { size: 8.5, color: MUT }); y += 16; }
+    }
+    const note = (all ? "Transfers between your own accounts are left out of the all-accounts view because they don't change your total. " : '') + notes.join(' ') + ' Amounts are in Philippine pesos (PHP). This statement is made from the entries in your SAWADA tracker. It is not an official bank document.';
+    const lines = doc.wrap(note, R - L, 7.5);
+    need(lines.length * 10 + 8);
+    y += 4; for (const ln of lines) { doc.rawText(ln, L, y, { size: 7.5, color: LIGHT }); y += 10; }
+
+    // page numbers
+    const n = doc.pages.length;
+    doc.pages.forEach((pg, i) => { doc.cur = pg; doc.text(`Page ${i + 1} of ${n}`, R, doc.H - 22, { size: 7.5, color: LIGHT, align: 'right' }); doc.text('SAWADA. Budget Tracker', L, doc.H - 22, { size: 7.5, color: LIGHT }); });
+    const name = `SAWADA Statement ${acct || 'All accounts'} ${from} to ${to}.pdf`.replace(/[\\/:*?"<>|]/g, '-');
+    return { blob: doc.output(), name };
+  }
+
+  // hand the PDF to the person: share sheet on phones (iPhone: Save to Files), download on computers
+  async function deliverPDF({ blob, name }) {
+    const file = new File([blob], name, { type: 'application/pdf' });
+    const phone = window.matchMedia('(pointer:coarse)').matches;
+    const url = URL.createObjectURL(blob);
+    const download = () => { const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); };
+    const share = async () => {
+      try { await navigator.share({ files: [file], title: name.replace(/\.pdf$/, '') }); return true; }
+      catch (e) { return e && e.name === 'AbortError'; } // AbortError = closed the share sheet
+    };
+    const canShare = navigator.canShare && navigator.canShare({ files: [file] });
+    if (phone && canShare && await share()) return;
+    if (!phone) { download(); toast('Statement downloaded'); return; }
+    // the share sheet needs a fresh tap, or this phone can't share files: offer buttons
+    const opts = [];
+    if (canShare) opts.push({ label: 'Save or share PDF', primary: true, fn: () => share() });
+    opts.push({ label: 'Open PDF', primary: !canShare, fn: () => { window.open(url, '_blank') || (location.href = url); } });
+    opts.push({ label: 'Download', fn: download });
+    choose('Statement ready', 'Tap <b>Save or share PDF</b>, then <b>Save to Files</b>. Or open it and use the share button.', opts);
+  }
+
   function editStatement() {
     if (!S.accounts.length) { toast('Add an account first.'); return; }
     const ym = todayStr().slice(0, 7), last = shiftMonth(ym, -1);
@@ -1195,7 +1347,7 @@
     const custom = { key: 'period', value: 'custom' };
     openForm({
       title: 'Statement (PDF)',
-      note: 'Pick an account and period. The statement opens in a new tab: tap <b>Save as PDF</b> (on iPhone: Share → Save to Files).',
+      note: 'Pick an account and period. You get a PDF file: on iPhone tap <b>Save to Files</b> in the share sheet; on a computer it downloads.',
       fields: [
         { key: 'acct', label: 'Account', type: 'select', options: [{ value: '', label: 'All accounts' }, ...S.accounts.map((a) => ({ value: a.name, label: a.name }))], full: true },
         { key: 'period', label: 'Period', type: 'select', options: periods, default: UI.stmtPeriod || 'this', full: true },
@@ -1213,6 +1365,12 @@
         else if (v.period === 'year') { from = ym.slice(0, 4) + '-01-01'; to = todayStr(); }
         else { from = v.from; to = v.to; if (!from || !to) return 'Pick both dates.'; if (from > to) return '"From" must be before "To".'; }
         UI.stmtAcct = v.acct; UI.stmtPeriod = v.period; saveUI();
+        if (window.MiniPDF) {
+          let pdf;
+          try { pdf = statementPDF({ acct: v.acct, from, to, debts: v.debts }); } catch (e) { console.error(e); }
+          if (pdf) { setTimeout(() => deliverPDF(pdf), 0); return; }
+        }
+        // fallback: printable page
         const html = statementHTML({ acct: v.acct, from, to, debts: v.debts });
         const w = window.open('', '_blank');
         if (w) { w.document.open(); w.document.write(html); w.document.close(); }
