@@ -2158,9 +2158,18 @@
     if (!addMenuOpen) { if (m) m.remove(); return; }
     if (!m) { m = document.createElement('div'); m.id = 'addMenu'; m.className = 'add-menu'; m.setAttribute('role', 'menu'); document.body.appendChild(m); }
     const item = (act, ico, title, sub, hot) => `<button type="button" role="menuitem" class="am-item${hot ? ' hot' : ''}" data-act="${act}"><span class="am-ico">${ico}</span><span class="am-txt"><b>${title}</b><span>${sub}</span></span></button>`;
+    const ico = (d) => `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+    const tile = (what, d, label) => `<button type="button" role="menuitem" class="am-tile" data-act="menuAdd" data-what="${what}"><span class="am-ico">${ico(d)}</span><span>${label}</span></button>`;
     m.innerHTML = item('scanCamera', CAM_ICO, 'Scan receipt', 'Take a photo', true)
       + item('scanUpload', IMG_ICO, 'Upload receipt', 'Photo, screenshot or PDF')
-      + item('addTx', PEN_ICO, 'Add manually', 'Income or expense');
+      + `<div class="am-sep" role="separator"></div><div class="am-grid">`
+      + tile('addTx', '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>', 'Income / Expense')
+      + tile('addPayment', '<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M3 10h18M7 15h3"/>', 'Payment')
+      + tile('addDebt', '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>', 'Debt')
+      + tile('addTransfer', '<path d="M7 7h12l-3-3M17 17H5l3 3"/>', 'Transfer')
+      + tile('addAccount', '<rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M2.5 10h19"/>', 'Account')
+      + tile('addBill', '<rect x="4" y="5" width="16" height="16" rx="2"/><path d="M8 3v4M16 3v4M4 10h16"/>', 'Bill')
+      + `</div>`;
   }
   function closeAddMenu() { if (addMenuOpen) { addMenuOpen = false; renderAddMenu(); } }
 
@@ -2288,7 +2297,7 @@
     nextMonth: () => { UI.month = shiftMonth(UI.month, 1); saveUI(); render(); },
     toggleHide: () => { UI.hideMoney = !UI.hideMoney; saveUI(); render(); },
     togglePaid: () => { UI.showPaid = !UI.showPaid; saveUI(); render(); },
-    addTx: () => { closeAddMenu(); editTx(); }, statement: () => editStatement(), chartPick: (el) => chartPick(el), openLog: () => { UI.tab = 'history'; UI.logAcct = ''; saveUI(); render(); window.scrollTo(0, 0); }, undoLog: (el) => undoLog(el.dataset.g), addMenu: () => { addMenuOpen = !addMenuOpen; renderAddMenu(); }, scanCamera: () => pickReceipt(true), scanUpload: () => pickReceipt(false), recordInterest: (el) => recordInterest(el.dataset.uid), addDebt: () => editDebt(), addPayment: () => editPayment(), addAccount: () => editAccount(),
+    addTx: () => { closeAddMenu(); editTx(); }, statement: () => editStatement(), chartPick: (el) => chartPick(el), openLog: () => { UI.tab = 'history'; UI.logAcct = ''; saveUI(); render(); window.scrollTo(0, 0); }, undoLog: (el) => undoLog(el.dataset.g), addMenu: () => { addMenuOpen = !addMenuOpen; renderAddMenu(); }, menuAdd: (el) => { const f = ACTIONS[el.dataset.what]; closeAddMenu(); if (f) f(el); }, scanCamera: () => pickReceipt(true), scanUpload: () => pickReceipt(false), recordInterest: (el) => recordInterest(el.dataset.uid), addDebt: () => editDebt(), addPayment: () => editPayment(), addAccount: () => editAccount(),
     addTransfer: () => editTransfer(), addCategory: () => editCategory(),
     toggleTheme: () => setTheme(isDark() ? 'light' : 'dark'),
     setTheme: (el) => setTheme(el.dataset.v),
